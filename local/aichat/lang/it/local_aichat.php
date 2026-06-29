@@ -93,7 +93,7 @@ $string['maxmsglength_desc'] = 'Lunghezza massima in caratteri per un singolo me
 $string['privacyheading'] = 'Privacy e Conformità';
 $string['privacynotice'] = 'Informativa Privacy';
 $string['privacynotice_desc'] = 'Contenuto HTML mostrato agli utenti prima della prima interazione con la chat. Lascia vuoto per disabilitare.';
-$string['privacynotice_default'] = 'Questo chatbot utilizza Azure OpenAI per elaborare i tuoi messaggi. I dati della conversazione sono memorizzati su questa istanza Moodle e processati dai servizi Azure AI di Microsoft. Continuando, acconsenti a questo trattamento.';
+$string['privacynotice_default'] = 'Questo chatbot utilizza un servizio AI esterno (OpenAI o Microsoft Azure OpenAI, a seconda della configurazione del sito) per elaborare i tuoi messaggi. I dati della conversazione sono memorizzati su questa istanza Moodle e inviati al provider AI configurato per generare le risposte. Continuando, acconsenti a questo trattamento.';
 $string['showprivacynotice'] = 'Mostra Informativa Privacy';
 $string['showprivacynotice_desc'] = 'Mostra un overlay con l\'informativa privacy la prima volta che un utente apre il chatbot.';
 
@@ -184,8 +184,8 @@ $string['privacy:metadata:feedback:userid'] = 'L\'utente che ha dato il feedback
 $string['privacy:metadata:feedback:feedback'] = 'Il valore del feedback (pollice su o giù).';
 $string['privacy:metadata:feedback:comment'] = 'Un commento opzionale con il feedback.';
 $string['privacy:metadata:feedback:timecreated'] = 'Quando il feedback è stato dato.';
-$string['privacy:metadata:azure'] = 'I messaggi vengono inviati ad Azure OpenAI per l\'elaborazione AI.';
-$string['privacy:metadata:azure:message'] = 'Il messaggio dell\'utente inviato ad Azure OpenAI per generare una risposta.';
+$string['privacy:metadata:aiprovider'] = 'I messaggi vengono inviati al provider AI esterno configurato (OpenAI o Microsoft Azure OpenAI) per l\'elaborazione AI.';
+$string['privacy:metadata:aiprovider:message'] = 'Il messaggio dell\'utente inviato al provider AI per generare una risposta.';
 
 // Events.
 $string['eventchatmessagesent'] = 'Messaggio chat inviato';

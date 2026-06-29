@@ -71,9 +71,9 @@ class provider implements
             'timecreated' => 'privacy:metadata:feedback:timecreated',
         ], 'privacy:metadata:feedback');
 
-        $collection->add_external_location_link('azure_openai', [
-            'message' => 'privacy:metadata:azure:message',
-        ], 'privacy:metadata:azure');
+        $collection->add_external_location_link('ai_provider', [
+            'message' => 'privacy:metadata:aiprovider:message',
+        ], 'privacy:metadata:aiprovider');
 
         return $collection;
     }

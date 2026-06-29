@@ -93,7 +93,7 @@ $string['maxmsglength_desc'] = 'Maximum character length for a single user messa
 $string['privacyheading'] = 'Privacy & Compliance';
 $string['privacynotice'] = 'Privacy Notice';
 $string['privacynotice_desc'] = 'HTML content shown to users before their first chat interaction. Leave empty to disable.';
-$string['privacynotice_default'] = 'This chatbot uses Azure OpenAI to process your messages. Your conversation data is stored on this Moodle instance and processed by Microsoft Azure AI services. By continuing, you consent to this processing.';
+$string['privacynotice_default'] = 'This chatbot uses an external AI service (OpenAI, or Microsoft Azure OpenAI, depending on your site configuration) to process your messages. Your conversation data is stored on this Moodle instance and sent to the configured AI provider to generate responses. By continuing, you consent to this processing.';
 $string['showprivacynotice'] = 'Show Privacy Notice';
 $string['showprivacynotice_desc'] = 'Display a privacy notice overlay the first time a user opens the chatbot.';
 
@@ -184,8 +184,8 @@ $string['privacy:metadata:feedback:userid'] = 'The user who gave the feedback.';
 $string['privacy:metadata:feedback:feedback'] = 'The feedback value (thumbs up or down).';
 $string['privacy:metadata:feedback:comment'] = 'An optional comment with the feedback.';
 $string['privacy:metadata:feedback:timecreated'] = 'When the feedback was given.';
-$string['privacy:metadata:azure'] = 'Messages are sent to Azure OpenAI for AI processing.';
-$string['privacy:metadata:azure:message'] = 'The user message sent to Azure OpenAI for generating a response.';
+$string['privacy:metadata:aiprovider'] = 'Messages are sent to the configured external AI provider (OpenAI or Microsoft Azure OpenAI) for AI processing.';
+$string['privacy:metadata:aiprovider:message'] = 'The user message sent to the AI provider to generate a response.';
 
 // Events.
 $string['eventchatmessagesent'] = 'Chat message sent';
