@@ -32,8 +32,12 @@ $string['generalheading'] = 'Generale';
 $string['enabled'] = 'Abilita AI Chat';
 $string['enabled_desc'] = 'Abilita o disabilita il chatbot AI su tutto il sito.';
 
-// Azure OpenAI Connection.
-$string['azureheading'] = 'Connessione Azure OpenAI';
+// AI Provider Connection.
+$string['azureheading'] = 'Connessione provider AI';
+$string['provider'] = 'Provider AI';
+$string['provider_desc'] = 'Scegli il backend AI. <b>Azure OpenAI</b> (predefinito) usa un endpoint basato su deployment su *.openai.azure.com. <b>OpenAI</b> usa l\'API standard su api.openai.com — per OpenAI lascia vuoto l\'URL Endpoint e inserisci l\'id del modello (es. gpt-4o-mini) nei campi deployment sottostanti.';
+$string['provider_azure'] = 'Azure OpenAI';
+$string['provider_openai'] = 'OpenAI';
 $string['endpoint'] = 'URL Endpoint';
 $string['endpoint_desc'] = 'L\'URL dell\'endpoint della risorsa Azure OpenAI (es. https://tua-risorsa.openai.azure.com/).';
 $string['apikey'] = 'Chiave API';
@@ -202,6 +206,7 @@ $string['nomessages'] = 'Nessun messaggio da esportare.';
 $string['invalidformat'] = 'Formato di esportazione non valido.';
 $string['flaggedinjection'] = '⚠ Potenziale prompt injection rilevata';
 $string['invalidazureendpoint'] = 'URL endpoint Azure OpenAI non valido.';
+$string['invalidopenaiendpoint'] = 'URL endpoint OpenAI non valido. Deve essere https://api.openai.com, oppure lascia vuoto l\'URL Endpoint.';
 $string['azureinvalidresponse'] = 'Azure OpenAI ha restituito una risposta non valida.';
 $string['azurenotconfigured'] = 'Azure OpenAI non è configurato. Contatta l\'amministratore del sito.';
 

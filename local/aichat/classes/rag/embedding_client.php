@@ -84,7 +84,11 @@ class embedding_client {
      * @throws \moodle_exception On failure.
      */
     private static function call_api(array $inputs): array {
+        $provider = \local_aichat\azure_openai_client::get_provider();
         $endpoint = get_config('local_aichat', 'endpoint');
+        if ($provider === 'openai' && empty($endpoint)) {
+            $endpoint = 'https://api.openai.com';
+        }
         $apikey = get_config('local_aichat', 'apikey');
         $deployment = get_config('local_aichat', 'embeddingdeployment');
         $apiversion = get_config('local_aichat', 'apiversion') ?: '2024-08-01-preview';
@@ -93,24 +97,32 @@ class embedding_client {
             throw new \moodle_exception('azurenotconfigured', 'local_aichat');
         }
 
-        // Validate endpoint is a trusted Azure OpenAI domain.
-        if (!preg_match('#^https://[a-z0-9\-]+\.openai\.azure\.com/?$#i', $endpoint)) {
-            throw new \moodle_exception('invalidazureendpoint', 'local_aichat');
+        // Validate endpoint against a per-provider SSRF allowlist and build the URL.
+        if ($provider === 'openai') {
+            if (!preg_match('#^https://api\.openai\.com/?$#i', $endpoint)) {
+                throw new \moodle_exception('invalidopenaiendpoint', 'local_aichat');
+            }
+            $url = rtrim($endpoint, '/') . '/v1/embeddings';
+        } else {
+            if (!preg_match('#^https://[a-z0-9\-]+\.openai\.azure\.com/?$#i', $endpoint)) {
+                throw new \moodle_exception('invalidazureendpoint', 'local_aichat');
+            }
+            $url = rtrim($endpoint, '/') . '/openai/deployments/' . urlencode($deployment)
+                 . '/embeddings?api-version=' . urlencode($apiversion);
         }
 
-        $url = rtrim($endpoint, '/') . '/openai/deployments/' . urlencode($deployment)
-             . '/embeddings?api-version=' . urlencode($apiversion);
-
-        $payload = json_encode([
-            'input' => $inputs,
-        ], JSON_THROW_ON_ERROR);
+        $body = ['input' => $inputs];
+        if ($provider === 'openai') {
+            $body['model'] = $deployment;
+        }
+        $payload = json_encode($body, JSON_THROW_ON_ERROR);
 
         $retries = 0;
         while ($retries <= self::MAX_RETRIES) {
             $curl = new \curl(['ignoresecurity' => false]);
             $curl->setHeader([
                 'Content-Type: application/json',
-                'api-key: ' . $apikey,
+                $provider === 'openai' ? 'Authorization: Bearer ' . $apikey : 'api-key: ' . $apikey,
             ]);
             $response = $curl->post($url, $payload);
             $httpcode = $curl->get_info()['http_code'] ?? 0;

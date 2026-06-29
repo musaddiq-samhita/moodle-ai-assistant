@@ -52,6 +52,17 @@ if ($hassiteconfig) {
         ''
     ));
 
+    $settings->add(new admin_setting_configselect(
+        'local_aichat/provider',
+        get_string('provider', 'local_aichat'),
+        get_string('provider_desc', 'local_aichat'),
+        'azure',
+        [
+            'azure'  => get_string('provider_azure', 'local_aichat'),
+            'openai' => get_string('provider_openai', 'local_aichat'),
+        ]
+    ));
+
     $settings->add(new admin_setting_configtext(
         'local_aichat/endpoint',
         get_string('endpoint', 'local_aichat'),

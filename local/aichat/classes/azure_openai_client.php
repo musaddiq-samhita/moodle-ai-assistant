@@ -95,11 +95,74 @@ class azure_openai_client {
      * @param string $endpoint The Azure endpoint URL.
      * @throws \moodle_exception If the endpoint is not a valid Azure OpenAI URL.
      */
-    private static function validate_endpoint(string $endpoint): void {
-        // Allow only Azure OpenAI endpoints (*.openai.azure.com).
+    private static function validate_endpoint(string $endpoint, string $provider): void {
+        if ($provider === 'openai') {
+            // Allow only the official OpenAI API host (SSRF allowlist).
+            if (!preg_match('#^https://api\.openai\.com/?$#i', $endpoint)) {
+                throw new \moodle_exception('invalidopenaiendpoint', 'local_aichat');
+            }
+            return;
+        }
+        // Allow only Azure OpenAI endpoints (*.openai.azure.com) (SSRF allowlist).
         if (!preg_match('#^https://[a-z0-9\-]+\.openai\.azure\.com/?$#i', $endpoint)) {
             throw new \moodle_exception('invalidazureendpoint', 'local_aichat');
         }
+    }
+
+    /**
+     * Resolve the configured AI provider.
+     *
+     * @return string 'openai' or 'azure' (default).
+     */
+    public static function get_provider(): string {
+        return get_config('local_aichat', 'provider') === 'openai' ? 'openai' : 'azure';
+    }
+
+    /**
+     * Resolve the effective endpoint base URL for the provider.
+     *
+     * For OpenAI the host is fixed, so the admin endpoint field is optional.
+     *
+     * @param string $provider 'openai' or 'azure'.
+     * @return string The endpoint base URL.
+     */
+    private static function resolve_endpoint(string $provider): string {
+        $endpoint = get_config('local_aichat', 'endpoint');
+        if ($provider === 'openai' && empty($endpoint)) {
+            return 'https://api.openai.com';
+        }
+        return (string) $endpoint;
+    }
+
+    /**
+     * Build the chat completions URL for the provider.
+     *
+     * @param string $endpoint Endpoint base URL.
+     * @param string $deployment Azure deployment name / OpenAI model id.
+     * @param string $apiversion Azure API version (ignored for OpenAI).
+     * @param string $provider 'openai' or 'azure'.
+     * @return string
+     */
+    private static function build_chat_url(string $endpoint, string $deployment, string $apiversion, string $provider): string {
+        if ($provider === 'openai') {
+            return rtrim($endpoint, '/') . '/v1/chat/completions';
+        }
+        return rtrim($endpoint, '/') . '/openai/deployments/' . urlencode($deployment)
+             . '/chat/completions?api-version=' . urlencode($apiversion);
+    }
+
+    /**
+     * Build request headers with provider-specific authentication.
+     *
+     * @param string $apikey The API key.
+     * @param string $provider 'openai' or 'azure'.
+     * @return string[]
+     */
+    private static function build_request_headers(string $apikey, string $provider): array {
+        return [
+            'Content-Type: application/json',
+            $provider === 'openai' ? 'Authorization: Bearer ' . $apikey : 'api-key: ' . $apikey,
+        ];
     }
 
     /**
@@ -203,7 +266,8 @@ class azure_openai_client {
         // Check circuit breaker before calling.
         circuit_breaker::check();
 
-        $endpoint = get_config('local_aichat', 'endpoint');
+        $provider = self::get_provider();
+        $endpoint = self::resolve_endpoint($provider);
         $apikey = get_config('local_aichat', 'apikey');
         $deployment = get_config('local_aichat', 'chatdeployment');
         $apiversion = get_config('local_aichat', 'apiversion') ?: '2024-08-01-preview';
@@ -215,10 +279,9 @@ class azure_openai_client {
             throw new \moodle_exception('azurenotconfigured', 'local_aichat');
         }
 
-        self::validate_endpoint($endpoint);
+        self::validate_endpoint($endpoint, $provider);
 
-        $url = rtrim($endpoint, '/') . '/openai/deployments/' . urlencode($deployment)
-             . '/chat/completions?api-version=' . urlencode($apiversion);
+        $url = self::build_chat_url($endpoint, $deployment, $apiversion, $provider);
 
         self::log('INFO', 'complete() request', [
             'deployment' => $deployment,
@@ -228,17 +291,18 @@ class azure_openai_client {
             'temperature' => $temperature,
         ]);
 
-        $payload = json_encode([
+        $body = [
             'messages' => $messages,
             'max_completion_tokens' => $maxtokens,
             'temperature' => $temperature,
-        ], JSON_THROW_ON_ERROR);
+        ];
+        if ($provider === 'openai') {
+            $body['model'] = $deployment;
+        }
+        $payload = json_encode($body, JSON_THROW_ON_ERROR);
 
         $curl = new \curl(['ignoresecurity' => false]);
-        $curl->setHeader([
-            'Content-Type: application/json',
-            'api-key: ' . $apikey,
-        ]);
+        $curl->setHeader(self::build_request_headers($apikey, $provider));
 
         $tstart = microtime(true);
         $response = $curl->post($url, $payload);
@@ -298,7 +362,8 @@ class azure_openai_client {
         // Check circuit breaker before calling.
         circuit_breaker::check();
 
-        $endpoint = get_config('local_aichat', 'endpoint');
+        $provider = self::get_provider();
+        $endpoint = self::resolve_endpoint($provider);
         $apikey = get_config('local_aichat', 'apikey');
         $deployment = get_config('local_aichat', 'chatdeployment');
         $apiversion = get_config('local_aichat', 'apiversion') ?: '2024-08-01-preview';
@@ -310,10 +375,9 @@ class azure_openai_client {
             throw new \moodle_exception('azurenotconfigured', 'local_aichat');
         }
 
-        self::validate_endpoint($endpoint);
+        self::validate_endpoint($endpoint, $provider);
 
-        $url = rtrim($endpoint, '/') . '/openai/deployments/' . urlencode($deployment)
-             . '/chat/completions?api-version=' . urlencode($apiversion);
+        $url = self::build_chat_url($endpoint, $deployment, $apiversion, $provider);
 
         self::log('INFO', 'stream() request', [
             'deployment' => $deployment,
@@ -323,22 +387,23 @@ class azure_openai_client {
             'temperature' => $temperature,
         ]);
 
-        $payload = json_encode([
+        $body = [
             'messages' => $messages,
             'max_completion_tokens' => $maxtokens,
             'temperature' => $temperature,
             'stream' => true,
             'stream_options' => ['include_usage' => true],
-        ], JSON_THROW_ON_ERROR);
+        ];
+        if ($provider === 'openai') {
+            $body['model'] = $deployment;
+        }
+        $payload = json_encode($body, JSON_THROW_ON_ERROR);
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'api-key: ' . $apikey,
-            ],
+            CURLOPT_HTTPHEADER => self::build_request_headers($apikey, $provider),
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_TIMEOUT => 120,
             CURLOPT_CONNECTTIMEOUT => 10,

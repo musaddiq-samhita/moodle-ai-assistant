@@ -32,18 +32,22 @@ $string['generalheading'] = 'General';
 $string['enabled'] = 'Enable AI Chat';
 $string['enabled_desc'] = 'Enable or disable the AI chatbot across the entire site.';
 
-// Azure OpenAI Connection.
-$string['azureheading'] = 'Azure OpenAI Connection';
+// AI Provider Connection.
+$string['azureheading'] = 'AI Provider Connection';
+$string['provider'] = 'AI provider';
+$string['provider_desc'] = 'Choose the AI backend. <b>Azure OpenAI</b> (default) uses a deployment-based endpoint at *.openai.azure.com. <b>OpenAI</b> uses the standard OpenAI API at api.openai.com — for OpenAI, leave the Endpoint URL blank and enter the model id (e.g. gpt-4o-mini) in the deployment fields below.';
+$string['provider_azure'] = 'Azure OpenAI';
+$string['provider_openai'] = 'OpenAI';
 $string['endpoint'] = 'Endpoint URL';
-$string['endpoint_desc'] = 'The Azure OpenAI resource endpoint URL (e.g., https://your-resource.openai.azure.com/).';
+$string['endpoint_desc'] = 'For Azure: the Azure OpenAI resource endpoint URL (e.g., https://your-resource.openai.azure.com/). For OpenAI: leave blank (api.openai.com is used automatically).';
 $string['apikey'] = 'API Key';
-$string['apikey_desc'] = 'The API key for your Azure OpenAI resource. This value is never displayed after saving.';
-$string['chatdeployment'] = 'Chat Completion Deployment Name';
-$string['chatdeployment_desc'] = 'The Azure OpenAI deployment name for the chat/completion model (e.g., gpt-4o, gpt-4o-mini).';
-$string['embeddingdeployment'] = 'Embedding Deployment Name';
-$string['embeddingdeployment_desc'] = 'The Azure OpenAI deployment name for the embedding model (e.g., text-embedding-3-small). Used for RAG vector indexing.';
+$string['apikey_desc'] = 'The API key for the selected provider. This value is never displayed after saving.';
+$string['chatdeployment'] = 'Chat Completion Deployment / Model';
+$string['chatdeployment_desc'] = 'For Azure: the deployment name for the chat/completion model. For OpenAI: the model id (e.g., gpt-4o, gpt-4o-mini).';
+$string['embeddingdeployment'] = 'Embedding Deployment / Model';
+$string['embeddingdeployment_desc'] = 'For Azure: the deployment name for the embedding model. For OpenAI: the model id (e.g., text-embedding-3-small). Used for RAG vector indexing.';
 $string['apiversion'] = 'API Version';
-$string['apiversion_desc'] = 'The Azure OpenAI API version string.';
+$string['apiversion_desc'] = 'The Azure OpenAI API version string (ignored when the provider is OpenAI).';
 
 // Model Configuration.
 $string['modelheading'] = 'Model Configuration';
@@ -202,6 +206,7 @@ $string['nomessages'] = 'No messages to export.';
 $string['invalidformat'] = 'Invalid export format.';
 $string['flaggedinjection'] = '⚠ Potential prompt injection detected';
 $string['invalidazureendpoint'] = 'Invalid Azure OpenAI endpoint URL.';
+$string['invalidopenaiendpoint'] = 'Invalid OpenAI endpoint URL. It must be https://api.openai.com, or leave the Endpoint URL blank.';
 $string['azureinvalidresponse'] = 'Azure OpenAI returned an invalid response.';
 $string['azurenotconfigured'] = 'Azure OpenAI is not configured. Please contact the site administrator.';
 
