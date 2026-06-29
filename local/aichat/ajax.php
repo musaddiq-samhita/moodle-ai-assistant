@@ -38,6 +38,10 @@ $cmid      = optional_param('cmid', 0, PARAM_INT);
 $context = context_course::instance($courseid);
 require_capability('local/aichat:use', $context);
 
+// Set the page context so content formatting (format_text/format_string used during
+// RAG extraction) has a valid $PAGE->context on this standalone AJAX endpoint.
+$PAGE->set_context($context);
+
 // SSE headers.
 header('Content-Type: text/event-stream');
 header('Cache-Control: no-cache');

@@ -426,7 +426,9 @@ class azure_openai_client {
                 $buffer = substr($buffer, $pos + 1);
                 $line = trim($line);
 
-                if (empty($line) || !str_starts_with($line, 'data: ')) {
+                // PHP 7.4-safe prefix check (str_starts_with is PHP 8.0+ and is not
+                // polyfilled on the target Moodle 4.1 / PHP 7.4 server).
+                if (empty($line) || strpos($line, 'data: ') !== 0) {
                     continue;
                 }
 

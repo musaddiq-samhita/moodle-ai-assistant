@@ -40,10 +40,13 @@ function local_aichat_before_footer() {
         return;
     }
 
-    // Only proceed if Azure OpenAI is configured.
+    // Only proceed if the AI provider is configured. For Azure both endpoint and
+    // API key are required; for OpenAI the endpoint is optional (defaults to
+    // api.openai.com), so only the API key is required.
+    $provider = get_config('local_aichat', 'provider');
     $endpoint = get_config('local_aichat', 'endpoint');
     $apikey   = get_config('local_aichat', 'apikey');
-    if (empty($endpoint) || empty($apikey)) {
+    if (empty($apikey) || ($provider !== 'openai' && empty($endpoint))) {
         return;
     }
 
