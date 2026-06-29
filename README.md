@@ -22,11 +22,34 @@ context-aware responses.
 | | |
 |---|---|
 | **Version** | 0.1.0 (Alpha) |
-| **Moodle** | 4.2+ required, tested on 4.5 |
-| **PHP** | 8.1+ (Docker image uses 8.3) |
+| **Moodle** | 4.2+ upstream — **this fork also supports 4.1** (see backport note below) |
+| **PHP** | 8.1+ upstream — **this fork also supports 7.4** |
 | **Database** | PostgreSQL (recommended), MySQL/MariaDB |
+| **AI provider** | Azure OpenAI (default) — **this fork also supports the standard OpenAI API** |
 | **License** | MIT |
 | **Component** | `local_aichat` |
+
+> ### 🔁 This fork: Moodle 4.1 / PHP 7.4 backport + OpenAI support
+>
+> Upstream requires **Moodle 4.2+ / PHP 8.1+** and targets **Azure OpenAI** only. This fork
+> (branch `backport/moodle-4.1-php7.4`) adapts the plugin to also run on **Moodle 4.1.0 /
+> PHP 7.4** and adds a **provider toggle** so it can use the **standard OpenAI API** in
+> addition to Azure OpenAI. Verified end-to-end on Moodle 4.1.0 / PHP 7.4.33 / PostgreSQL 12.
+>
+> **Backport changes (Moodle 4.1 / PHP 7.4):**
+> - `classes/external/*.php` — web-service base classes use the Moodle 4.1 global namespace
+>   instead of the 4.2 `core_external\` namespace.
+> - `version.php` — `requires` lowered to `2022112800` (Moodle 4.1.0 baseline).
+> - `classes/azure_openai_client.php` — replaced the PHP 8.0 `str_starts_with()` (not
+>   available on PHP 7.4) with a `strpos()`-based check in the SSE stream parser.
+> - `ajax.php` — set `$PAGE->set_context()` on the SSE endpoint (required for content
+>   formatting during RAG extraction).
+>
+> **OpenAI provider:** a new **AI provider** setting (Azure OpenAI *default*, or OpenAI).
+> Selecting OpenAI switches the client to `https://api.openai.com/v1` with
+> `Authorization: Bearer` auth and a `model` field; the endpoint SSRF allowlist is kept.
+> See [Configuration](#configuration). The privacy notice and GDPR metadata are
+> provider-neutral. Re-apply this fork's commits if you pull upstream updates.
 
 ---
 
@@ -127,12 +150,21 @@ The ZIP files are created in the `dist/` directory:
 ### Configuration
 
 1. Navigate to **Site administration → Plugins → Local plugins → AI Chat**
-2. Fill in the Azure OpenAI connection settings:
+2. Choose the **AI provider** and fill in the connection settings:
+
+   **Azure OpenAI** (default):
    - **Endpoint** — your Azure OpenAI resource URL (e.g. `https://your-resource.openai.azure.com`)
    - **API Key** — your Azure OpenAI API key
-   - **Chat Deployment** — the chat model deployment name (e.g. `gpt-4o`)
-   - **Embedding Deployment** — the embedding model deployment name (e.g. `text-embedding-3-small`)
+   - **Chat Deployment / Model** — the chat deployment name (e.g. `gpt-4o`, `gpt-4o-mini`)
+   - **Embedding Deployment / Model** — the embedding deployment name (e.g. `text-embedding-3-small`)
    - **API Version** — API version string (default: `2024-08-01-preview`)
+
+   **OpenAI** (this fork):
+   - **Endpoint** — leave **blank** (`https://api.openai.com` is used automatically)
+   - **API Key** — your OpenAI API key (`sk-…`)
+   - **Chat Deployment / Model** — the model id (e.g. `gpt-4o-mini`)
+   - **Embedding Deployment / Model** — the model id (e.g. `text-embedding-3-small`)
+   - **API Version** — ignored for OpenAI
 3. Save changes and enable the plugin
 
 ---
