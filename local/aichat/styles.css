@@ -1101,6 +1101,7 @@
 @media (prefers-color-scheme: dark) {
     .aichat-panel {
         background: #1e1e1e;
+        color: #e0e0e0;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     }
 
@@ -1133,11 +1134,12 @@
 
     .aichat-welcome .aichat-action-card {
         background: #2d2d2d;
-        border-color: var(--aichat-primary);
+        border-color: var(--aichat-secondary);
+        color: #e0e0e0;
     }
 
     .aichat-action-card:hover {
-        background: rgba(176, 43, 41, 0.1);
+        background: rgba(47, 177, 188, 0.15);
     }
 
     .aichat-input-area {
@@ -1197,12 +1199,12 @@
     }
 
     .aichat-suggestion-chip {
-        color: var(--aichat-primary);
-        border-color: var(--aichat-primary);
+        color: var(--aichat-secondary);
+        border-color: var(--aichat-secondary);
     }
 
     .aichat-suggestion-chip:hover {
-        background: rgba(176, 43, 41, 0.15);
+        background: rgba(47, 177, 188, 0.15);
     }
 
     .aichat-feedback-btn {
