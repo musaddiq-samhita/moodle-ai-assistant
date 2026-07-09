@@ -42,7 +42,7 @@ class content_extractor {
      * @param int $courseid The course ID.
      * @return array Array of chunks: ['chunk_type', 'chunk_id', 'chunk_title', 'content_text']
      */
-    public static function extract_course_content(int $courseid): array {
+    public static function extract_course_content(int $courseid, array $existingrows = []): array {
         $course = get_course($courseid);
         $modinfo = get_fast_modinfo($course);
         $chunks = [];
@@ -60,6 +60,13 @@ class content_extractor {
         // Extract activity content.
         foreach ($modinfo->get_cms() as $cm) {
             if (!$cm->uservisible) {
+                continue;
+            }
+            // SCORM packages get their own tiered extractor (title/prose from the
+            // packaged files), producing pre-formed chunks - not the flat-string path.
+            if ($cm->modname === 'scorm') {
+                $scormchunks = scorm_extractor::extract_chunks($cm, $course, $existingrows);
+                $chunks = array_merge($chunks, $scormchunks);
                 continue;
             }
             $text = self::extract_activity($cm, $course);
@@ -259,6 +266,10 @@ class content_extractor {
         }
         if (!$cm->uservisible) {
             return null;
+        }
+        // SCORM: use the cheap titles tier on the live path - never parse package files here.
+        if ($cm->modname === 'scorm') {
+            return scorm_extractor::current_page_titles($cm, $course);
         }
         $text = self::extract_activity($cm, $course);
         if (empty(trim($text))) {
