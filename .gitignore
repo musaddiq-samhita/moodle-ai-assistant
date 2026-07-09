@@ -29,3 +29,6 @@ moodledata/
 .env
 .env.*
 !.env.example
+
+# ---- Wayfinder / scratch working files ----
+.scratch/
