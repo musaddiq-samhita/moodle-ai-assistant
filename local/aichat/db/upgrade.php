@@ -58,5 +58,26 @@ function xmldb_local_aichat_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2024010105, 'local', 'aichat');
     }
 
+    if ($oldversion < 2024010113) {
+        // Widen the embeddings unique index to include chunk_title, so a single
+        // activity can produce several chunks (e.g. a SCORM lesson or large page
+        // split into parts) instead of colliding on one (courseid, type, id) row.
+        $table = new xmldb_table('local_aichat_embeddings');
+
+        $oldindex = new xmldb_index('ix_course_chunk', XMLDB_INDEX_UNIQUE,
+            ['courseid', 'chunk_type', 'chunk_id']);
+        if ($dbman->index_exists($table, $oldindex)) {
+            $dbman->drop_index($table, $oldindex);
+        }
+
+        $newindex = new xmldb_index('ix_course_chunk', XMLDB_INDEX_UNIQUE,
+            ['courseid', 'chunk_type', 'chunk_id', 'chunk_title']);
+        if (!$dbman->index_exists($table, $newindex)) {
+            $dbman->add_index($table, $newindex);
+        }
+
+        upgrade_plugin_savepoint(true, 2024010113, 'local', 'aichat');
+    }
+
     return true;
 }

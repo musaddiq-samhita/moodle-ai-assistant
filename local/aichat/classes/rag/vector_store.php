@@ -52,8 +52,9 @@ class vector_store {
         $existingmap = [];
         $existingids = [];
         foreach ($existing as $record) {
-            $key = $record->chunk_type . '_' . $record->chunk_id;
-            // Track all IDs for potential sub-chunks with the same key.
+            // Key includes the title so multiple sub-chunks of one activity
+            // (e.g. a split lesson: "… (part 1/2)", "… (part 2/2)") are distinct rows.
+            $key = self::chunk_key($record->chunk_type, $record->chunk_id, $record->chunk_title);
             $existingmap[$key] = $record;
             $existingids[$record->id] = $key;
         }
@@ -64,7 +65,7 @@ class vector_store {
         $toembedmeta = [];
 
         foreach ($chunks as $chunk) {
-            $key = $chunk['chunk_type'] . '_' . $chunk['chunk_id'];
+            $key = self::chunk_key($chunk['chunk_type'], $chunk['chunk_id'], $chunk['chunk_title']);
             $hash = hash('sha256', $chunk['content_text']);
             $activekeys[$key] = true;
 
@@ -84,7 +85,7 @@ class vector_store {
             $vectors = embedding_client::embed_batch($toembed);
 
             foreach ($toembedmeta as $i => $meta) {
-                $key = $meta['chunk_type'] . '_' . $meta['chunk_id'];
+                $key = self::chunk_key($meta['chunk_type'], $meta['chunk_id'], $meta['chunk_title']);
                 $record = new \stdClass();
                 $record->courseid = $courseid;
                 $record->chunk_type = $meta['chunk_type'];
@@ -123,6 +124,22 @@ class vector_store {
             'skipped' => $skipped,
             'deleted' => $deleted,
         ];
+    }
+
+    /**
+     * Build the in-memory identity key for an embedding chunk.
+     *
+     * Includes the title so that an activity that yields several chunks
+     * (a large page or SCORM lesson split into parts) maps to several distinct
+     * rows rather than collapsing onto one.
+     *
+     * @param string $chunktype
+     * @param int $chunkid
+     * @param string $chunktitle
+     * @return string
+     */
+    private static function chunk_key(string $chunktype, int $chunkid, string $chunktitle): string {
+        return $chunktype . '_' . $chunkid . '_' . $chunktitle;
     }
 
     /**

@@ -127,8 +127,8 @@
       </KEYS>
       <INDEXES>
         <INDEX NAME="ix_courseid" UNIQUE="false" FIELDS="courseid"/>
-        <INDEX NAME="ix_course_chunk" UNIQUE="true" FIELDS="courseid, chunk_type, chunk_id"
-               COMMENT="One embedding per chunk per course for upsert logic"/>
+        <INDEX NAME="ix_course_chunk" UNIQUE="true" FIELDS="courseid, chunk_type, chunk_id, chunk_title"
+               COMMENT="One embedding per chunk per course; title included so an activity may yield several (split) chunks"/>
       </INDEXES>
     </TABLE>
 
