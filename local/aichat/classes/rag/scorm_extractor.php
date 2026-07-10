@@ -54,6 +54,16 @@ class scorm_extractor {
         'fonts', 'theme', 'author', 'authors', 'aiTutorConfig', 'aiLearnerCourseApiKey',
     ];
 
+    /** @var string[] Storyline slide-model keys whose subtrees are config/asset/state noise. */
+    private const STORYLINE_SKIP_KEYS = [
+        'audiolib', 'imagelib', 'imagedata', 'base64', 'pngfb', 'html5data', 'assetId',
+        'animations', 'tweens', 'events', 'actionGroups', 'actions', 'vectorData', 'path',
+        'data', 'states',
+    ];
+
+    /** @var string[] Storyline keys that may carry authored notes-pane text (untested path). */
+    private const STORYLINE_NOTE_KEYS = ['notes', 'notesData', 'slideNotes'];
+
     /**
      * Extract indexable chunks for a single SCORM activity.
      *
@@ -177,7 +187,9 @@ class scorm_extractor {
         switch ($format) {
             case 'rise':
                 return self::parse_rise($ctx);
-            // 'storyline', 'generic', 'cmi5' parsers land in later slices.
+            case 'storyline':
+                return self::parse_storyline($ctx);
+            // 'generic', 'cmi5' parsers land in later slices.
             default:
                 return [];
         }
@@ -265,6 +277,295 @@ class scorm_extractor {
                 self::collect_rise_text($item, $out);
             }
         }
+    }
+
+    /**
+     * Parse an Articulate Storyline package. Storyline HTML5 output is a manifest
+     * (html5/data/js/data.js) plus one file per slide, each wrapping JSON in
+     * window.globalProvideData('<tag>', '<js-string>'). One segment per slide.
+     *
+     * @param \context_module $ctx
+     * @return array Segment list (empty on failure -> Tier B fallback).
+     */
+    protected static function parse_storyline(\context_module $ctx): array {
+        $data = self::read_gpd($ctx, '/html5/data/js/', 'data.js');
+        if (!is_array($data) || empty($data['scenes'])) {
+            debugging('local_aichat scorm_extractor: Storyline data.js unreadable, falling back to titles',
+                DEBUG_DEVELOPER);
+            return [];
+        }
+        $sectionmap = self::storyline_section_map($ctx);
+
+        // Content scenes in presentation order (skip player message scenes).
+        $scenes = [];
+        foreach ($data['scenes'] as $scene) {
+            if (empty($scene['isMessageScene'])) {
+                $scenes[] = $scene;
+            }
+        }
+        usort($scenes, function($a, $b) {
+            return ($a['sceneNumber'] ?? 0) <=> ($b['sceneNumber'] ?? 0);
+        });
+
+        $segments = [];
+        foreach ($scenes as $scene) {
+            $slides = $scene['slides'] ?? [];
+            usort($slides, function($a, $b) {
+                return ($a['slideNumberInScene'] ?? 0) <=> ($b['slideNumberInScene'] ?? 0);
+            });
+            foreach ($slides as $slide) {
+                if (array_key_exists('includeInSlideCounts', $slide) && !$slide['includeInSlideCounts']) {
+                    continue;
+                }
+                $url = ltrim((string) ($slide['html5url'] ?? ''), '/');
+                if ($url === '') {
+                    continue;
+                }
+                $slideid = pathinfo($url, PATHINFO_FILENAME);
+                $model = self::read_gpd($ctx, '/' . trim(dirname($url), '/') . '/', basename($url));
+                $prose = is_array($model) ? self::slide_prose($model) : '';
+                $segments[] = [
+                    'lesson_title'  => trim((string) ($slide['title'] ?? '')),
+                    'prose'         => $prose,
+                    'section_title' => $sectionmap[$slideid] ?? null,
+                ];
+            }
+        }
+        return $segments;
+    }
+
+    /**
+     * Collect readable prose from one Storyline slide model: on-slide text runs
+     * plus any authored notes (untested field path).
+     *
+     * @param array $model
+     * @return string
+     */
+    protected static function slide_prose(array $model): string {
+        $parts = [];
+        foreach ($model['slideLayers'] ?? [] as $layer) {
+            self::collect_storyline_text($layer['objects'] ?? [], $parts);
+        }
+        // Notes pane (often the fullest narration) - untested path, included when present.
+        self::collect_storyline_notes($model, $parts);
+
+        // Drop consecutive duplicate runs (hover/visited state text, repeated headings).
+        $deduped = [];
+        $prev = null;
+        foreach ($parts as $p) {
+            if ($p !== $prev) {
+                $deduped[] = $p;
+            }
+            $prev = $p;
+        }
+        return trim(implode("\n", $deduped));
+    }
+
+    /**
+     * Recursively collect Storyline on-slide text (string values under 'text' keys),
+     * pruning config/asset/state subtrees.
+     *
+     * @param mixed $node
+     * @param array $out (by reference)
+     */
+    private static function collect_storyline_text($node, array &$out): void {
+        if (!is_array($node)) {
+            return;
+        }
+        if (array_keys($node) !== range(0, count($node) - 1)) {
+            foreach ($node as $key => $value) {
+                if (in_array($key, self::STORYLINE_SKIP_KEYS, true)) {
+                    continue;
+                }
+                if ($key === 'text' && is_string($value) && trim($value) !== '') {
+                    $text = self::clean_storyline_text($value);
+                    if ($text !== '') {
+                        $out[] = $text;
+                    }
+                } else {
+                    self::collect_storyline_text($value, $out);
+                }
+            }
+        } else {
+            foreach ($node as $item) {
+                self::collect_storyline_text($item, $out);
+            }
+        }
+    }
+
+    /**
+     * Find authored notes anywhere in the slide model and collect their text.
+     * The exact field is unverified (no notes-bearing specimen was available), so
+     * this scans the known note keys and degrades silently when absent.
+     *
+     * @param mixed $node
+     * @param array $out (by reference)
+     */
+    private static function collect_storyline_notes($node, array &$out): void {
+        if (!is_array($node)) {
+            return;
+        }
+        if (array_keys($node) !== range(0, count($node) - 1)) {
+            foreach ($node as $key => $value) {
+                if (in_array($key, self::STORYLINE_SKIP_KEYS, true)) {
+                    continue;
+                }
+                if (in_array($key, self::STORYLINE_NOTE_KEYS, true)) {
+                    if (is_string($value)) {
+                        $text = self::clean_storyline_text($value);
+                        if ($text !== '') {
+                            $out[] = $text;
+                        }
+                    } else {
+                        self::collect_storyline_text($value, $out);
+                    }
+                } else {
+                    self::collect_storyline_notes($value, $out);
+                }
+            }
+        } else {
+            foreach ($node as $item) {
+                self::collect_storyline_notes($item, $out);
+            }
+        }
+    }
+
+    /**
+     * Map slide id -> section title from the Storyline frame nav outline (best effort).
+     *
+     * @param \context_module $ctx
+     * @return array slideid => section title
+     */
+    protected static function storyline_section_map(\context_module $ctx): array {
+        $frame = self::read_gpd($ctx, '/html5/data/js/', 'frame.js');
+        $map = [];
+        if (!is_array($frame)) {
+            return $map;
+        }
+        $links = $frame['navData']['outline']['links'] ?? [];
+        foreach ($links as $root) {
+            self::walk_storyline_outline($root, self::outline_title($root), $map);
+        }
+        return $map;
+    }
+
+    /**
+     * Recursively walk the frame outline, assigning each slide its grouping section.
+     *
+     * @param array $node
+     * @param string $section
+     * @param array $map (by reference)
+     */
+    private static function walk_storyline_outline(array $node, string $section, array &$map): void {
+        $sid = (string) ($node['slideid'] ?? '');
+        if ($sid !== '') {
+            $parts = explode('.', $sid);
+            $map[end($parts)] = $section;
+        }
+        $kids = $node['links'] ?? [];
+        // A node with children acts as its children's section heading.
+        $childsection = !empty($kids) ? self::outline_title($node) : $section;
+        foreach ($kids as $child) {
+            self::walk_storyline_outline($child, $childsection, $map);
+        }
+    }
+
+    /**
+     * The display title of a frame-outline node.
+     *
+     * @param array $node
+     * @return string
+     */
+    private static function outline_title(array $node): string {
+        $title = (string) ($node['displaytext'] ?? ($node['slidetitle'] ?? ''));
+        return trim(html_entity_decode($title, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /**
+     * Read a Storyline globalProvideData file and return its decoded JSON payload.
+     *
+     * @param \context_module $ctx
+     * @param string $filepath File area path (e.g. '/html5/data/js/').
+     * @param string $filename
+     * @return array|null Decoded payload, or null if missing/unparseable.
+     */
+    protected static function read_gpd(\context_module $ctx, string $filepath, string $filename): ?array {
+        $fs = get_file_storage();
+        $file = $fs->get_file($ctx->id, 'mod_scorm', 'content', 0, $filepath, $filename);
+        if (!$file) {
+            return null;
+        }
+        $doc = $file->get_content();
+        // Strip a UTF-8 BOM if present.
+        $doc = preg_replace('/^\xEF\xBB\xBF/', '', $doc);
+        if (!preg_match("/globalProvideData\\(\\s*'[^']*'\\s*,\\s*'(.*)'\\s*\\)\\s*;?\\s*\$/s", $doc, $m)) {
+            return null;
+        }
+        $decoded = json_decode(self::js_unescape($m[1]), true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Decode a JavaScript single-quoted string literal's escape sequences.
+     *
+     * Byte-oriented on purpose: `\` (0x5C) never appears inside a UTF-8 multibyte
+     * sequence, so raw multibyte content passes through untouched while only the
+     * ASCII escape sequences are rewritten.
+     *
+     * @param string $s
+     * @return string
+     */
+    private static function js_unescape(string $s): string {
+        $simple = [
+            'n' => "\n", 'r' => "\r", 't' => "\t", 'b' => "\x08", 'f' => "\f",
+            'v' => "\v", '0' => "\0", "'" => "'", '"' => '"', '\\' => '\\', '/' => '/',
+        ];
+        $out = '';
+        $len = strlen($s);
+        for ($i = 0; $i < $len; $i++) {
+            if ($s[$i] === '\\' && $i + 1 < $len) {
+                $nx = $s[$i + 1];
+                if ($nx === 'u') {
+                    $hex = substr($s, $i + 2, 4);
+                    $cp = hexdec($hex);
+                    // Combine a UTF-16 surrogate pair (😀) into one character.
+                    if ($cp >= 0xD800 && $cp <= 0xDBFF
+                            && $i + 11 < $len && $s[$i + 6] === '\\' && $s[$i + 7] === 'u') {
+                        $ch = json_decode('"\u' . $hex . '\u' . substr($s, $i + 8, 4) . '"');
+                        $out .= is_string($ch) ? $ch : '';
+                        $i += 11;
+                        continue;
+                    }
+                    // Reuse json_decode to turn \uXXXX into its UTF-8 character.
+                    $ch = json_decode('"\u' . $hex . '"');
+                    $out .= is_string($ch) ? $ch : '';
+                    $i += 5;
+                    continue;
+                }
+                if ($nx === 'x') {
+                    $out .= chr(hexdec(substr($s, $i + 2, 2)));
+                    $i += 3;
+                    continue;
+                }
+                $out .= $simple[$nx] ?? $nx;
+                $i += 1;
+                continue;
+            }
+            $out .= $s[$i];
+        }
+        return $out;
+    }
+
+    /**
+     * Strip HTML and Storyline escapes from a text run.
+     *
+     * @param string $s
+     * @return string
+     */
+    private static function clean_storyline_text(string $s): string {
+        // Storyline escapes a literal percent (its variable delimiter) as ^%^.
+        $s = str_replace('^%^', '%', $s);
+        return trim(html_to_text($s, 0, false));
     }
 
     /**
@@ -517,7 +818,12 @@ class scorm_extractor {
      */
     protected static function section_name(\cm_info $cm, \stdClass $course): string {
         $name = get_section_name($course, $cm->sectionnum);
-        return $name !== null ? trim((string) $name) : '';
+        if ($name === null) {
+            return '';
+        }
+        // get_section_name() returns format_string() output (HTML-encoded); decode
+        // entities so the header text embedded for RAG is clean ("&" not "&amp;").
+        return trim(html_entity_decode((string) $name, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
     }
 
     /**
