@@ -77,6 +77,10 @@ $string['ragtopk'] = 'Top-K Results';
 $string['ragtopk_desc'] = 'Number of relevant content chunks to retrieve via RAG.';
 $string['ragthreshold'] = 'Similarity Threshold';
 $string['ragthreshold_desc'] = 'Minimum cosine similarity score (0–1) for a content chunk to be included. Lower values return more but less relevant results.';
+$string['scorm_min_prose_chars'] = 'SCORM minimum lesson length';
+$string['scorm_min_prose_chars_desc'] = 'When indexing SCORM packages, a lesson/slide with fewer than this many characters of text is treated as a title/navigation stub and skipped.';
+$string['scorm_merge_target_chars'] = 'SCORM merge target size';
+$string['scorm_merge_target_chars_desc'] = 'When indexing SCORM packages, consecutive short lessons/slides in the same section are merged together up to about this many characters, producing fewer, denser content chunks.';
 
 // Usage Limits.
 $string['limitsheading'] = 'Usage Limits';

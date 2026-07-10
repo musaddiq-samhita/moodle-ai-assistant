@@ -42,6 +42,12 @@ class scorm_extractor {
     /** @var int Max characters kept from the breadcrumb before title suffixes are appended. */
     private const TITLE_BREADCRUMB_MAX = 200;
 
+    /** @var int Default floor: drop a segment whose prose is shorter than this. */
+    private const DEFAULT_MIN_PROSE_CHARS = 40;
+
+    /** @var int Default target size when merging consecutive within-section segments. */
+    private const DEFAULT_MERGE_TARGET_CHARS = 2000;
+
     /** @var string[] Articulate Rise block keys whose string values are prose. */
     private const RISE_TEXT_KEYS = [
         'heading', 'paragraph', 'title', 'caption', 'subtitle', 'text', 'description',
@@ -887,46 +893,8 @@ class scorm_extractor {
      * @return array
      */
     private static function strip_repeated_lines(array $pages): array {
-        if (count($pages) < 2) {
-            return $pages;
-        }
-        $linecount = [];
-        foreach ($pages as $page) {
-            $seen = [];
-            foreach (preg_split('/\n/', $page['text']) as $line) {
-                $t = trim($line);
-                if ($t === '' || isset($seen[$t])) {
-                    continue;
-                }
-                $seen[$t] = true;
-                $linecount[$t] = ($linecount[$t] ?? 0) + 1;
-            }
-        }
-        $threshold = max(2, (int) ceil(0.6 * count($pages)));
-        $drop = [];
-        foreach ($linecount as $line => $count) {
-            if ($count >= $threshold) {
-                $drop[$line] = true;
-            }
-        }
-        if (empty($drop)) {
-            return $pages;
-        }
-        foreach ($pages as &$page) {
-            $kept = [];
-            foreach (preg_split('/\n/', $page['text']) as $line) {
-                if (!isset($drop[trim($line)])) {
-                    $kept[] = $line;
-                }
-            }
-            $stripped = trim(preg_replace('/\n{3,}/', "\n\n", implode("\n", $kept)));
-            // Minimum-content guard: don't let de-noising empty a page.
-            if (\core_text::strlen($stripped) >= 30) {
-                $page['text'] = $stripped;
-            }
-        }
-        unset($page);
-        return $pages;
+        // Nav/header/footer lines recurring across >= 60% of pages; keep >= 30 chars.
+        return self::drop_frequent_lines($pages, 'text', 0.6, null, 30);
     }
 
     /**
@@ -993,25 +961,40 @@ class scorm_extractor {
      * @return array Chunk dicts.
      */
     protected static function assemble_chunks(array $segments, \cm_info $cm, \stdClass $course): array {
+        // Volume pipeline: dedup boilerplate -> fill sections -> drop thin segments
+        // -> merge within section -> (chunk_with_header applies the split safety net).
+        $segments = self::dedup_boilerplate($segments);
+        $segments = self::forward_fill_sections($segments);
+
+        $minprose = self::int_setting('scorm_min_prose_chars', self::DEFAULT_MIN_PROSE_CHARS);
+        $kept = [];
+        foreach ($segments as $seg) {
+            if (\core_text::strlen(trim((string) $seg['prose'])) >= $minprose) {
+                $kept[] = $seg;
+            }
+        }
+
+        $target = self::int_setting('scorm_merge_target_chars', self::DEFAULT_MERGE_TARGET_CHARS);
+        $groups = self::merge_segments($kept, $target);
+
         $package = self::package_title($cm);
         $section = self::section_name($cm, $course);
         $chunks = [];
         // Chunk titles must be unique within an activity (they carry the DB unique
-        // index): disambiguate segments that share a title (e.g. two Storyline
-        // slides both called "Introduction").
+        // index): disambiguate groups that share a title.
         $seentitles = [];
 
-        foreach ($segments as $seg) {
-            $prose = trim((string) $seg['prose']);
-            if ($prose === '') {
+        foreach ($groups as $group) {
+            $body = self::group_body($group['segs']);
+            if ($body === '') {
                 continue;
             }
-            $lesson = trim((string) $seg['lesson_title']);
-            $header = self::header_block($cm->name, $package, $section, $lesson, $seg['section_title'] ?? null);
+            $lessonlabel = self::group_lesson_label($group['segs']);
+            $header = self::header_block($cm->name, $package, $section, $lessonlabel, $group['section']);
             // Cap the breadcrumb so the disambiguator and any "(part n/total)" suffix
             // always survive the 255-char chunk_title limit (which the unique index needs).
             $basetitle = \core_text::substr(
-                $cm->name . ' › ' . $package . ($lesson !== '' ? ' › ' . $lesson : ''),
+                $cm->name . ' › ' . $package . ($lessonlabel !== '' ? ' › ' . $lessonlabel : ''),
                 0, self::TITLE_BREADCRUMB_MAX
             );
             if (isset($seentitles[$basetitle])) {
@@ -1019,9 +1002,191 @@ class scorm_extractor {
             } else {
                 $seentitles[$basetitle] = 1;
             }
-            $chunks = array_merge($chunks, self::chunk_with_header($header, $prose, $cm->id, $basetitle));
+            $chunks = array_merge($chunks, self::chunk_with_header($header, $body, $cm->id, $basetitle));
         }
         return $chunks;
+    }
+
+    /**
+     * Drop boilerplate chrome: short lines (<= 60 chars) that recur across >= 50%
+     * of the package's segments (nav/quiz/footer text). Language-agnostic.
+     *
+     * @param array $segments
+     * @return array
+     */
+    private static function dedup_boilerplate(array $segments): array {
+        // Short lines (<= 60 chars) recurring across >= 50% of segments are chrome.
+        return self::drop_frequent_lines($segments, 'prose', 0.5, 60, null);
+    }
+
+    /**
+     * Drop lines that recur across a ratio of items (nav/header/footer chrome),
+     * shared by the segment dedup and the generic-parser page dedup.
+     *
+     * @param array $items List of associative rows.
+     * @param string $key The text field on each row.
+     * @param float $ratio Drop a line present in >= ceil(ratio * count) items.
+     * @param int|null $maxlen Only consider lines up to this length (null = any).
+     * @param int|null $minkeep If set, keep a row's original text when stripping
+     *        would leave fewer than this many characters.
+     * @return array
+     */
+    private static function drop_frequent_lines(array $items, string $key, float $ratio,
+            ?int $maxlen, ?int $minkeep): array {
+        $total = count($items);
+        if ($total < 2) {
+            return $items;
+        }
+        $linecount = [];
+        foreach ($items as $item) {
+            $seen = [];
+            foreach (preg_split('/\n/', (string) $item[$key]) as $line) {
+                $t = trim($line);
+                if ($t === '' || ($maxlen !== null && \core_text::strlen($t) > $maxlen) || isset($seen[$t])) {
+                    continue;
+                }
+                $seen[$t] = true;
+                $linecount[$t] = ($linecount[$t] ?? 0) + 1;
+            }
+        }
+        $threshold = max(2, (int) ceil($ratio * $total));
+        $drop = [];
+        foreach ($linecount as $line => $count) {
+            if ($count >= $threshold) {
+                $drop[$line] = true;
+            }
+        }
+        if (empty($drop)) {
+            return $items;
+        }
+        foreach ($items as &$item) {
+            $kept = [];
+            foreach (preg_split('/\n/', (string) $item[$key]) as $line) {
+                $t = trim($line);
+                if (($maxlen === null || \core_text::strlen($t) <= $maxlen) && isset($drop[$t])) {
+                    continue;
+                }
+                $kept[] = $line;
+            }
+            $stripped = trim(preg_replace('/\n{3,}/', "\n\n", implode("\n", $kept)));
+            if ($minkeep === null || \core_text::strlen($stripped) >= $minkeep) {
+                $item[$key] = $stripped;
+            }
+        }
+        unset($item);
+        return $items;
+    }
+
+    /**
+     * Forward-fill empty section titles from the preceding segment, so slides
+     * that sit between two section headings merge with their section instead of
+     * fragmenting the within-section merge. Segments before the first heading
+     * stay unsectioned.
+     *
+     * @param array $segments
+     * @return array
+     */
+    private static function forward_fill_sections(array $segments): array {
+        $last = null;
+        foreach ($segments as &$seg) {
+            if (!empty($seg['section_title'])) {
+                $last = $seg['section_title'];
+            } else if ($last !== null) {
+                $seg['section_title'] = $last;
+            }
+        }
+        unset($seg);
+        return $segments;
+    }
+
+    /**
+     * Group consecutive segments that share a section, packing prose up to the
+     * merge target. A segment larger than the target stands alone (and is split
+     * later by chunk_with_header).
+     *
+     * @param array $segments
+     * @param int $target
+     * @return array List of ['section' => ?string, 'segs' => array].
+     */
+    private static function merge_segments(array $segments, int $target): array {
+        $groups = [];
+        $current = null;
+        foreach ($segments as $seg) {
+            $len = \core_text::strlen(trim((string) $seg['prose']));
+            $section = $seg['section_title'] ?? null;
+            if ($current !== null && $current['section'] === $section
+                    && ($current['len'] + $len) <= $target) {
+                $current['segs'][] = $seg;
+                $current['len'] += $len;
+            } else {
+                if ($current !== null) {
+                    $groups[] = $current;
+                }
+                $current = ['section' => $section, 'segs' => [$seg], 'len' => $len];
+            }
+        }
+        if ($current !== null) {
+            $groups[] = $current;
+        }
+        return $groups;
+    }
+
+    /**
+     * The body text for a merged group: a single segment's prose, or each
+     * segment's title + prose stacked so per-lesson titles stay in the chunk.
+     *
+     * @param array $segs
+     * @return string
+     */
+    private static function group_body(array $segs): string {
+        if (count($segs) === 1) {
+            return trim((string) $segs[0]['prose']);
+        }
+        $parts = [];
+        foreach ($segs as $seg) {
+            $title = trim((string) $seg['lesson_title']);
+            $prose = trim((string) $seg['prose']);
+            if ($prose === '') {
+                continue;
+            }
+            $parts[] = ($title !== '') ? $title . "\n" . $prose : $prose;
+        }
+        return trim(implode("\n\n", $parts));
+    }
+
+    /**
+     * The "Lesson" label for a group: the single title, or "first … last".
+     *
+     * @param array $segs
+     * @return string
+     */
+    private static function group_lesson_label(array $segs): string {
+        $titles = [];
+        foreach ($segs as $seg) {
+            $t = trim((string) $seg['lesson_title']);
+            if ($t !== '') {
+                $titles[] = $t;
+            }
+        }
+        if (empty($titles)) {
+            return '';
+        }
+        if (count($titles) === 1) {
+            return $titles[0];
+        }
+        return $titles[0] . ' … ' . end($titles);
+    }
+
+    /**
+     * Read a positive-integer admin setting, falling back to a default.
+     *
+     * @param string $name
+     * @param int $default
+     * @return int
+     */
+    private static function int_setting(string $name, int $default): int {
+        $val = get_config('local_aichat', $name);
+        return ($val !== false && (int) $val > 0) ? (int) $val : $default;
     }
 
     /**

@@ -182,6 +182,22 @@ if ($hassiteconfig) {
         PARAM_FLOAT
     ));
 
+    $settings->add(new admin_setting_configtext(
+        'local_aichat/scorm_min_prose_chars',
+        get_string('scorm_min_prose_chars', 'local_aichat'),
+        get_string('scorm_min_prose_chars_desc', 'local_aichat'),
+        '40',
+        PARAM_INT
+    ));
+
+    $settings->add(new admin_setting_configtext(
+        'local_aichat/scorm_merge_target_chars',
+        get_string('scorm_merge_target_chars', 'local_aichat'),
+        get_string('scorm_merge_target_chars_desc', 'local_aichat'),
+        '2000',
+        PARAM_INT
+    ));
+
     // -------------------------------------------------------------------------
     // Usage Limits.
     // -------------------------------------------------------------------------
