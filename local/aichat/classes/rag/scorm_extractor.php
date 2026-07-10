@@ -90,29 +90,21 @@ class scorm_extractor {
         // Containment: any failure extracting one SCORM package degrades to a lower
         // tier (or nothing) - it must never abort indexing of the whole course.
         try {
-            $ctx = \context_module::instance($cm->id);
-            $format = self::detect_format($ctx);
+            $fingerprint = self::package_fingerprint($cm);
 
-            // Tier A - full package prose via the per-format parser.
-            $segments = self::parse($format, $ctx);
-            if (!empty($segments)) {
-                $chunks = self::assemble_chunks($segments, $cm, $course);
-                if (!empty($chunks)) {
-                    self::log_tier($cm, 'A', $format . ', ' . count($chunks) . ' chunk(s)');
-                    return $chunks;
+            // Pre-parse skip: if the package is unchanged since it was last indexed,
+            // re-emit its stored chunks verbatim - no file parse, and index_course
+            // skips re-embedding on the content-hash match.
+            if ($fingerprint !== '') {
+                $stored = self::stored_chunks($cm->id, $fingerprint, $existingrows);
+                if ($stored !== null) {
+                    self::log_tier($cm, 'skip', 'unchanged package, ' . count($stored) . ' chunk(s)');
+                    return $stored;
                 }
             }
 
-            // Tier B - SCO / organization titles straight from the DB (no file parse).
-            $titlechunk = self::titles_tier($cm, $course);
-            if ($titlechunk !== null) {
-                self::log_tier($cm, 'B', 'no parser segments (format=' . $format . ')');
-                return [$titlechunk];
-            }
-
-            // Tier C - fall back to the activity name + intro.
-            self::log_tier($cm, 'C', 'no SCO titles');
-            return self::name_intro_tier($cm);
+            $chunks = self::build_chunks($cm, $course);
+            return self::tag_source_hash($chunks, $fingerprint);
         } catch (\Exception $e) {
             debugging(
                 "local_aichat scorm_extractor: cmid {$cm->id} extraction failed, skipping ("
@@ -121,6 +113,101 @@ class scorm_extractor {
             );
             return [];
         }
+    }
+
+    /**
+     * Run the tiered extraction (detect -> parse -> assemble, else Tier B / C).
+     *
+     * @param \cm_info $cm
+     * @param \stdClass $course
+     * @return array Chunk dicts.
+     */
+    private static function build_chunks(\cm_info $cm, \stdClass $course): array {
+        $ctx = \context_module::instance($cm->id);
+        $format = self::detect_format($ctx);
+
+        // Tier A - full package prose via the per-format parser.
+        $segments = self::parse($format, $ctx);
+        if (!empty($segments)) {
+            $chunks = self::assemble_chunks($segments, $cm, $course);
+            if (!empty($chunks)) {
+                self::log_tier($cm, 'A', $format . ', ' . count($chunks) . ' chunk(s)');
+                return $chunks;
+            }
+        }
+
+        // Tier B - SCO / organization titles straight from the DB (no file parse).
+        $titlechunk = self::titles_tier($cm, $course);
+        if ($titlechunk !== null) {
+            self::log_tier($cm, 'B', 'no parser segments (format=' . $format . ')');
+            return [$titlechunk];
+        }
+
+        // Tier C - fall back to the activity name + intro.
+        self::log_tier($cm, 'C', 'no SCO titles');
+        return self::name_intro_tier($cm);
+    }
+
+    /**
+     * The package's change fingerprint - the SCORM sha1hash (populated by Moodle
+     * on upload, changes only on re-upload). Empty string if unavailable.
+     *
+     * @param \cm_info $cm
+     * @return string
+     */
+    private static function package_fingerprint(\cm_info $cm): string {
+        global $DB;
+        $hash = $DB->get_field('scorm', 'sha1hash', ['id' => $cm->instance]);
+        return $hash ? (string) $hash : '';
+    }
+
+    /**
+     * The activity's already-stored chunks, but only if every one carries the
+     * current fingerprint (i.e. the package is unchanged). Null otherwise, which
+     * signals a full re-parse.
+     *
+     * @param int $cmid
+     * @param string $fingerprint
+     * @param array $existingrows Existing embedding rows for the course.
+     * @return array|null
+     */
+    private static function stored_chunks(int $cmid, string $fingerprint, array $existingrows): ?array {
+        $chunks = [];
+        foreach ($existingrows as $row) {
+            if ($row->chunk_type !== 'scorm' || (int) $row->chunk_id !== $cmid) {
+                continue;
+            }
+            if (($row->source_hash ?? '') !== $fingerprint) {
+                return null;
+            }
+            $chunks[] = [
+                'chunk_type'   => 'scorm',
+                'chunk_id'     => $cmid,
+                'chunk_title'  => $row->chunk_title,
+                'content_text' => $row->content_text,
+                'source_hash'  => $fingerprint,
+            ];
+        }
+        return !empty($chunks) ? $chunks : null;
+    }
+
+    /**
+     * Stamp every chunk with the source fingerprint so a later reindex can skip
+     * re-parsing the package when it is unchanged.
+     *
+     * @param array $chunks
+     * @param string $fingerprint
+     * @return array
+     */
+    private static function tag_source_hash(array $chunks, string $fingerprint): array {
+        if ($fingerprint === '') {
+            return $chunks;
+        }
+        foreach ($chunks as &$chunk) {
+            $chunk['source_hash'] = $fingerprint;
+        }
+        unset($chunk);
+        return $chunks;
     }
 
     /**

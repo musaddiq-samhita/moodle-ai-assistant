@@ -37,18 +37,23 @@ class vector_store {
      * Index (or re-index) all content for a course.
      *
      * @param int $courseid The course ID.
+     * @param bool $force Force a full re-parse (a manual rebuild), bypassing the
+     *        extractor's unchanged-source skip. Embeddings are still only rewritten
+     *        when the resulting content actually changed.
      * @return array {indexed: int, skipped: int, deleted: int}
      */
-    public static function index_course(int $courseid): array {
+    public static function index_course(int $courseid, bool $force = false): array {
         global $DB;
 
-        $chunks = content_extractor::extract_course_content($courseid);
         $indexed = 0;
         $skipped = 0;
         $now = time();
 
-        // Build a map of existing embeddings for this course.
+        // Load existing embeddings first: the extractor uses them to skip re-parsing
+        // unchanged sources (e.g. a SCORM package whose fingerprint is unchanged).
+        // A forced rebuild passes no rows to the extractor, so it always re-parses.
         $existing = $DB->get_records('local_aichat_embeddings', ['courseid' => $courseid]);
+        $chunks = content_extractor::extract_course_content($courseid, $force ? [] : $existing);
         $existingmap = [];
         $existingids = [];
         foreach ($existing as $record) {
@@ -71,6 +76,13 @@ class vector_store {
 
             // Check if this chunk exists and is unchanged.
             if (isset($existingmap[$key]) && $existingmap[$key]->content_hash === $hash) {
+                // Content is unchanged, so no re-embed - but keep source_hash current
+                // (cheap field update) so the extractor's pre-parse skip can fire next run.
+                $sourcehash = $chunk['source_hash'] ?? null;
+                if ($sourcehash !== null && ($existingmap[$key]->source_hash ?? null) !== $sourcehash) {
+                    $DB->set_field('local_aichat_embeddings', 'source_hash', $sourcehash,
+                        ['id' => $existingmap[$key]->id]);
+                }
                 $skipped++;
                 continue;
             }
@@ -93,6 +105,7 @@ class vector_store {
                 $record->chunk_title = $meta['chunk_title'];
                 $record->content_text = $meta['content_text'];
                 $record->content_hash = $meta['content_hash'];
+                $record->source_hash = $meta['source_hash'] ?? null;
                 $record->embedding = json_encode($vectors[$i]);
                 $record->token_count = (int) ceil(\core_text::strlen($meta['content_text']) / 4);
                 $record->timemodified = $now;

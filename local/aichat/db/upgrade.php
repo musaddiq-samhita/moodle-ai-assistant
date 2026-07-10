@@ -79,5 +79,16 @@ function xmldb_local_aichat_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2024010113, 'local', 'aichat');
     }
 
+    if ($oldversion < 2024010118) {
+        // Add source_hash: the source fingerprint (SCORM package sha1hash) used to
+        // skip re-parsing an unchanged package on reindex.
+        $table = new xmldb_table('local_aichat_embeddings');
+        $field = new xmldb_field('source_hash', XMLDB_TYPE_CHAR, '40', null, null, null, null, 'content_hash');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+        upgrade_plugin_savepoint(true, 2024010118, 'local', 'aichat');
+    }
+
     return true;
 }

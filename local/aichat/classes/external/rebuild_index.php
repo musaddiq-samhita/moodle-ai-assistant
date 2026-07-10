@@ -66,7 +66,8 @@ class rebuild_index extends external_api {
 
         $cid = $params['courseid'];
 
-        $stats = \local_aichat\rag\vector_store::index_course($cid);
+        // Manual rebuild forces a full re-parse (bypasses the unchanged-source skip).
+        $stats = \local_aichat\rag\vector_store::index_course($cid, true);
 
         return [
             'success'    => true,
