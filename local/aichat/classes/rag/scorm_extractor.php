@@ -189,7 +189,10 @@ class scorm_extractor {
                 return self::parse_rise($ctx);
             case 'storyline':
                 return self::parse_storyline($ctx);
-            // 'generic', 'cmi5' parsers land in later slices.
+            case 'generic':
+                return self::parse_generic($ctx);
+            case 'cmi5':
+                return self::parse_cmi5($ctx);
             default:
                 return [];
         }
@@ -566,6 +569,416 @@ class scorm_extractor {
         // Storyline escapes a literal percent (its variable delimiter) as ^%^.
         $s = str_replace('^%^', '%', $s);
         return trim(html_to_text($s, 0, false));
+    }
+
+    /**
+     * Parse a generic (hand-authored) SCORM 1.2/2004 package: walk the default
+     * organization's <item> tree in document order, resolve each leaf item's
+     * resource href to its HTML page, and strip it to text. One segment per item.
+     *
+     * NOTE: no hand-authored generic SCORM specimen exists on this deployment
+     * (all packages are Rise/Storyline), so the content-recovery step is
+     * spec-conformant but unproven end-to-end; the manifest parsing is validated.
+     *
+     * @param \context_module $ctx
+     * @return array Segment list (empty on failure -> Tier B fallback).
+     */
+    protected static function parse_generic(\context_module $ctx): array {
+        $fs = get_file_storage();
+        $manifest = $fs->get_file($ctx->id, 'mod_scorm', 'content', 0, '/', 'imsmanifest.xml');
+        if (!$manifest) {
+            return [];
+        }
+        $items = self::generic_manifest_items($manifest->get_content());
+        return self::segments_from_html_items($ctx, $items);
+    }
+
+    /**
+     * Parse a cmi5 package uploaded through mod_scorm: walk cmi5.xml, resolving
+     * each assignable unit's <url> to its launch HTML. Untested (no specimen).
+     *
+     * @param \context_module $ctx
+     * @return array Segment list (empty on failure -> Tier B fallback).
+     */
+    protected static function parse_cmi5(\context_module $ctx): array {
+        $fs = get_file_storage();
+        $file = $fs->get_file($ctx->id, 'mod_scorm', 'content', 0, '/', 'cmi5.xml');
+        if (!$file) {
+            return [];
+        }
+        $dom = self::load_xml($file->get_content());
+        if (!$dom) {
+            return [];
+        }
+        $roots = (new \DOMXPath($dom))->query("//*[local-name()='courseStructure']");
+        if (!$roots->length) {
+            return [];
+        }
+        $items = [];
+        self::walk_cmi5($roots->item(0), [], $items);
+        return self::segments_from_html_items($ctx, $items);
+    }
+
+    /**
+     * Shared back half of the HTML-based parsers: read each item's href page,
+     * strip repeated chrome, and emit segments. Returns [] if no page has prose.
+     *
+     * @param \context_module $ctx
+     * @param array $items Ordered [{title, section, href}].
+     * @return array Segment list.
+     */
+    private static function segments_from_html_items(\context_module $ctx, array $items): array {
+        if (empty($items)) {
+            return [];
+        }
+        $pages = [];
+        foreach ($items as $item) {
+            $href = (string) $item['href'];
+            // Skip external URLs (no local file / SSRF) and known player-shell pages.
+            if ($href === '' || preg_match('#^https?://#i', $href) || self::is_driver_shell($href)) {
+                continue;
+            }
+            $text = self::read_html_text($ctx, $href);
+            // Skip essentially-empty pages (< 30 non-whitespace chars) - a player
+            // shell or chrome-only page that slipped past the filename filter.
+            if ($text === null || \core_text::strlen(preg_replace('/\s+/u', '', $text)) < 30) {
+                continue;
+            }
+            $pages[] = ['title' => $item['title'], 'section' => $item['section'], 'text' => $text];
+        }
+        $pages = self::strip_repeated_lines($pages);
+
+        $segments = [];
+        $hasprose = false;
+        foreach ($pages as $page) {
+            $text = trim($page['text']);
+            if ($text === '') {
+                continue;
+            }
+            $hasprose = true;
+            $segments[] = [
+                'lesson_title'  => $page['title'],
+                'prose'         => $text,
+                'section_title' => $page['section'],
+            ];
+        }
+        // No readable prose anywhere -> let the extractor fall back to Tier B titles.
+        return $hasprose ? $segments : [];
+    }
+
+    /**
+     * Parse an imsmanifest.xml (as a string) into an ordered list of content items.
+     * Namespace-agnostic (matches on local-name), so SCORM 1.2 and 2004 both work.
+     * Kept string-in / array-out so the manifest walk is testable without a package.
+     *
+     * @param string $xmlcontent
+     * @return array Ordered list of ['title' => string, 'section' => ?string, 'href' => string].
+     */
+    protected static function generic_manifest_items(string $xmlcontent): array {
+        $dom = self::load_xml($xmlcontent);
+        if (!$dom) {
+            return [];
+        }
+        $xpath = new \DOMXPath($dom);
+
+        $xmlns = 'http://www.w3.org/XML/1998/namespace';
+        // An xml:base on <resources> applies to every <resource> href beneath it.
+        $resnodes = $xpath->query("//*[local-name()='resources']");
+        $resourcesbase = $resnodes->length ? trim($resnodes->item(0)->getAttributeNS($xmlns, 'base'), '/') : '';
+
+        // Index resources by identifier.
+        $resources = [];
+        foreach ($xpath->query("//*[local-name()='resource']") as $res) {
+            $rid = $res->getAttribute('identifier');
+            if ($rid === '') {
+                continue;
+            }
+            // Combine the resources-level base with any resource-level base.
+            $base = $resourcesbase;
+            $rbase = trim($res->getAttributeNS($xmlns, 'base'), '/');
+            if ($rbase !== '') {
+                $base = ($base !== '') ? $base . '/' . $rbase : $rbase;
+            }
+            $resources[$rid] = [
+                'href'      => $res->getAttribute('href'),
+                'scormtype' => strtolower(self::dom_attr_ci($res, 'scormtype')),
+                'xmlbase'   => $base,
+            ];
+        }
+
+        // Pick the default organization (else the first).
+        $org = null;
+        $orgsnodes = $xpath->query("//*[local-name()='organizations']");
+        $orglist = $xpath->query("//*[local-name()='organization']");
+        $default = $orgsnodes->length ? $orgsnodes->item(0)->getAttribute('default') : '';
+        foreach ($orglist as $candidate) {
+            if ($default !== '' && $candidate->getAttribute('identifier') === $default) {
+                $org = $candidate;
+                break;
+            }
+        }
+        if (!$org && $orglist->length) {
+            $org = $orglist->item(0);
+        }
+        if (!$org) {
+            return [];
+        }
+
+        $items = [];
+        self::walk_generic_items($org, [], $resources, $items);
+        return $items;
+    }
+
+    /**
+     * Depth-first walk of <item> descendants in document order, resolving leaf
+     * items to their content href and threading grouping-item titles as sections.
+     *
+     * @param \DOMElement $parent
+     * @param array $sectionstack
+     * @param array $resources id => [href, scormtype, xmlbase]
+     * @param array $items (by reference)
+     */
+    private static function walk_generic_items(\DOMElement $parent, array $sectionstack,
+            array $resources, array &$items): void {
+        foreach ($parent->childNodes as $child) {
+            if (!($child instanceof \DOMElement) || strcasecmp($child->localName, 'item') !== 0) {
+                continue;
+            }
+            $title = self::dom_child_text($child, 'title');
+            $idref = $child->getAttribute('identifierref');
+
+            if ($idref !== '' && isset($resources[$idref])) {
+                $res = $resources[$idref];
+                if ($res['href'] !== '' && in_array($res['scormtype'], ['sco', 'asset', ''], true)) {
+                    $items[] = [
+                        'title'   => $title,
+                        'section' => !empty($sectionstack) ? end($sectionstack) : null,
+                        'href'    => self::resolve_href($res),
+                    ];
+                }
+            }
+
+            // A grouping item (no resource) contributes its title as its children's section.
+            $childstack = $sectionstack;
+            if ($idref === '' && $title !== '') {
+                $childstack[] = $title;
+            }
+            self::walk_generic_items($child, $childstack, $resources, $items);
+        }
+    }
+
+    /**
+     * Depth-first walk of a cmi5 courseStructure: <au> are content units,
+     * <block> group them (their title becomes the section).
+     *
+     * @param \DOMElement $parent
+     * @param array $sectionstack
+     * @param array $items (by reference)
+     */
+    private static function walk_cmi5(\DOMElement $parent, array $sectionstack, array &$items): void {
+        foreach ($parent->childNodes as $child) {
+            if (!($child instanceof \DOMElement)) {
+                continue;
+            }
+            $name = strtolower($child->localName);
+            if ($name === 'au') {
+                $items[] = [
+                    'title'   => self::cmi5_title($child),
+                    'section' => !empty($sectionstack) ? end($sectionstack) : null,
+                    'href'    => trim(self::dom_child_text($child, 'url')),
+                ];
+            } else if ($name === 'block') {
+                $stack = $sectionstack;
+                $blocktitle = self::cmi5_title($child);
+                if ($blocktitle !== '') {
+                    $stack[] = $blocktitle;
+                }
+                self::walk_cmi5($child, $stack, $items);
+            }
+        }
+    }
+
+    /**
+     * The text of a cmi5 element's <title><langstring> (first language).
+     *
+     * @param \DOMElement $el
+     * @return string
+     */
+    private static function cmi5_title(\DOMElement $el): string {
+        foreach ($el->childNodes as $child) {
+            if ($child instanceof \DOMElement && strcasecmp($child->localName, 'title') === 0) {
+                foreach ($child->childNodes as $ls) {
+                    if ($ls instanceof \DOMElement && strcasecmp($ls->localName, 'langstring') === 0) {
+                        return trim($ls->textContent);
+                    }
+                }
+                return trim($child->textContent);
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Read a package HTML file and strip it to plain text, or null if missing.
+     *
+     * @param \context_module $ctx
+     * @param string $href Package-relative path.
+     * @return string|null
+     */
+    private static function read_html_text(\context_module $ctx, string $href): ?string {
+        $href = ltrim($href, '/');
+        if ($href === '') {
+            return null;
+        }
+        $dir = dirname($href);
+        $filepath = ($dir === '.' || $dir === '') ? '/' : '/' . trim($dir, '/') . '/';
+        $fs = get_file_storage();
+        $file = $fs->get_file($ctx->id, 'mod_scorm', 'content', 0, $filepath, basename($href));
+        if (!$file) {
+            return null;
+        }
+        // html_to_text($html, $width, $dolinks): width=0 = no hard wrap,
+        // dolinks=false = drop the "[1] http://..." link-reference tails.
+        return trim(html_to_text($file->get_content(), 0, false));
+    }
+
+    /**
+     * Normalise a resource href: URL-decode, drop query/fragment, apply xml:base.
+     *
+     * @param array $res
+     * @return string
+     */
+    private static function resolve_href(array $res): string {
+        $href = preg_replace('/[?#].*$/', '', urldecode((string) $res['href']));
+        if (!empty($res['xmlbase'])) {
+            $href = trim($res['xmlbase'], '/') . '/' . ltrim($href, '/');
+        }
+        return $href;
+    }
+
+    /**
+     * Whether an href is a known SCORM player/driver shell page (no learner content).
+     *
+     * @param string $href
+     * @return bool
+     */
+    private static function is_driver_shell(string $href): bool {
+        $lc = strtolower($href);
+        // Path fragments (a whole directory of player/driver code).
+        foreach (['scormdriver/', '/lms/'] as $fragment) {
+            if (strpos($lc, $fragment) !== false) {
+                return true;
+            }
+        }
+        // Exact shell filenames - matched on the basename so a real content page
+        // like "myblank.html" or "success-story.html" is NOT caught.
+        $shellfiles = [
+            'indexapi.html', 'index_lms.html', 'story.html', 'analytics-frame.html',
+            'goodbye.html', 'blank.html', 'aicccomm.html', 'preloadintegrity.js', 'configuration.js',
+        ];
+        return in_array(basename($lc), $shellfiles, true);
+    }
+
+    /**
+     * Drop lines that repeat across most pages (nav/header/footer chrome). Cheap
+     * intra-package pass; cross-chunk dedup is the volume ticket's job.
+     *
+     * @param array $pages
+     * @return array
+     */
+    private static function strip_repeated_lines(array $pages): array {
+        if (count($pages) < 2) {
+            return $pages;
+        }
+        $linecount = [];
+        foreach ($pages as $page) {
+            $seen = [];
+            foreach (preg_split('/\n/', $page['text']) as $line) {
+                $t = trim($line);
+                if ($t === '' || isset($seen[$t])) {
+                    continue;
+                }
+                $seen[$t] = true;
+                $linecount[$t] = ($linecount[$t] ?? 0) + 1;
+            }
+        }
+        $threshold = max(2, (int) ceil(0.6 * count($pages)));
+        $drop = [];
+        foreach ($linecount as $line => $count) {
+            if ($count >= $threshold) {
+                $drop[$line] = true;
+            }
+        }
+        if (empty($drop)) {
+            return $pages;
+        }
+        foreach ($pages as &$page) {
+            $kept = [];
+            foreach (preg_split('/\n/', $page['text']) as $line) {
+                if (!isset($drop[trim($line)])) {
+                    $kept[] = $line;
+                }
+            }
+            $stripped = trim(preg_replace('/\n{3,}/', "\n\n", implode("\n", $kept)));
+            // Minimum-content guard: don't let de-noising empty a page.
+            if (\core_text::strlen($stripped) >= 30) {
+                $page['text'] = $stripped;
+            }
+        }
+        unset($page);
+        return $pages;
+    }
+
+    /**
+     * Load XML safely (no network, no external entities), or null on parse error.
+     *
+     * @param string $xml
+     * @return \DOMDocument|null
+     */
+    private static function load_xml(string $xml): ?\DOMDocument {
+        if (trim($xml) === '') {
+            return null;
+        }
+        $prev = libxml_use_internal_errors(true);
+        $dom = new \DOMDocument();
+        $ok = $dom->loadXML($xml, LIBXML_NONET);
+        libxml_clear_errors();
+        libxml_use_internal_errors($prev);
+        return $ok ? $dom : null;
+    }
+
+    /**
+     * First direct-child element with the given local name, as trimmed text.
+     *
+     * @param \DOMElement $el
+     * @param string $localname
+     * @return string
+     */
+    private static function dom_child_text(\DOMElement $el, string $localname): string {
+        foreach ($el->childNodes as $child) {
+            if ($child instanceof \DOMElement && strcasecmp($child->localName, $localname) === 0) {
+                return trim($child->textContent);
+            }
+        }
+        return '';
+    }
+
+    /**
+     * An element's attribute value matched by local name (namespace-agnostic).
+     *
+     * @param \DOMElement $el
+     * @param string $localname
+     * @return string
+     */
+    private static function dom_attr_ci(\DOMElement $el, string $localname): string {
+        if ($el->hasAttributes()) {
+            foreach ($el->attributes as $attr) {
+                if (strcasecmp($attr->localName, $localname) === 0) {
+                    return (string) $attr->nodeValue;
+                }
+            }
+        }
+        return '';
     }
 
     /**
