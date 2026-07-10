@@ -178,7 +178,7 @@ if ($hassiteconfig) {
         'local_aichat/ragthreshold',
         get_string('ragthreshold', 'local_aichat'),
         get_string('ragthreshold_desc', 'local_aichat'),
-        '0.7',
+        '0.3',
         PARAM_FLOAT
     ));
 

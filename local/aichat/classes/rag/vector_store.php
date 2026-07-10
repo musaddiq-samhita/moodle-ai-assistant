@@ -156,7 +156,7 @@ class vector_store {
         if ($topk <= 0) {
             $topk = (int) get_config('local_aichat', 'ragtopk') ?: 5;
         }
-        $threshold = (float) get_config('local_aichat', 'ragthreshold') ?: 0.7;
+        $threshold = (float) get_config('local_aichat', 'ragthreshold') ?: 0.3;
 
         // Embed the query.
         $queryvector = embedding_client::embed($query);
