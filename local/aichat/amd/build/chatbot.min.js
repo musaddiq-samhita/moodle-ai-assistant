@@ -34,7 +34,8 @@ define(['core/ajax', 'core/templates', 'local_aichat/sanitizer'], function(Ajax,
         isSending: false,
         eventSource: null,
         recognition: null,
-        isRecording: false
+        isRecording: false,
+        historyLoadGen: 0
     };
 
     // DOM references (cached after render).
@@ -195,7 +196,12 @@ define(['core/ajax', 'core/templates', 'local_aichat/sanitizer'], function(Ajax,
                        '<div class="aichat-bubble ' + bubbleClass + '">' +
                        '<div class="aichat-bubble-content">' + content + '</div>' +
                        '</div></div></div>';
-            dom.messages.insertAdjacentHTML('beforeend', html);
+            // Match the template path: insert before the typing indicator.
+            if (dom.typing && dom.typing.parentNode === dom.messages) {
+                dom.typing.insertAdjacentHTML('beforebegin', html);
+            } else {
+                dom.messages.insertAdjacentHTML('beforeend', html);
+            }
             scrollToBottom();
         });
     }
@@ -265,10 +271,18 @@ define(['core/ajax', 'core/templates', 'local_aichat/sanitizer'], function(Ajax,
      * Load thread history via web service.
      */
     function loadHistory() {
+        // Generation token: a newer load, a new thread, or a user send
+        // invalidates this load so a slow chain cannot append stale messages.
+        state.historyLoadGen += 1;
+        var gen = state.historyLoadGen;
+
         Ajax.call([{
             methodname: 'local_aichat_get_history',
             args: {courseid: state.courseid}
         }])[0].then(function(result) {
+            if (gen !== state.historyLoadGen) {
+                return null;
+            }
             state.threadId = result.threadid || null;
 
             // Clear messages area.
@@ -283,16 +297,26 @@ define(['core/ajax', 'core/templates', 'local_aichat/sanitizer'], function(Ajax,
                     dom.welcome.classList.add('aichat-hidden');
                 }
 
+                // Render sequentially so DOM order always matches the
+                // chronological order returned by the web service. A plain
+                // forEach would race: appendMessage() is async (template
+                // render) and would insert in promise-resolution order.
+                var chain = Promise.resolve();
                 result.messages.forEach(function(msg) {
-                    appendMessage(msg);
+                    chain = chain.then(function() {
+                        if (gen !== state.historyLoadGen) {
+                            return null;
+                        }
+                        return appendMessage(msg);
+                    });
                 });
-            } else {
-                // Show welcome/action cards.
-                if (dom.welcome) {
-                    dom.welcome.classList.remove('aichat-hidden');
-                }
+                return chain;
             }
-            return;
+            // Show welcome/action cards.
+            if (dom.welcome) {
+                dom.welcome.classList.remove('aichat-hidden');
+            }
+            return null;
         }).catch(function() {
             // Silently fail — user sees empty chat.
         });
@@ -305,6 +329,10 @@ define(['core/ajax', 'core/templates', 'local_aichat/sanitizer'], function(Ajax,
         if (state.isSending) {
             return;
         }
+
+        // Invalidate any in-flight history load so it cannot append
+        // old-thread messages after the reset.
+        state.historyLoadGen += 1;
 
         Ajax.call([{
             methodname: 'local_aichat_new_thread',
@@ -357,6 +385,10 @@ define(['core/ajax', 'core/templates', 'local_aichat/sanitizer'], function(Ajax,
 
         state.isSending = true;
         setInputEnabled(false);
+
+        // Invalidate any in-flight history load; the live conversation now
+        // owns the messages area.
+        state.historyLoadGen += 1;
 
         // Clear any previous error messages.
         clearErrors();
