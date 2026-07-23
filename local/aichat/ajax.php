@@ -130,10 +130,15 @@ try {
     );
 
     // RAG context assembly — pass current cmid and sectionid so the context
-    // assembler can inject the live page content into every prompt.
+    // assembler can inject the live page content into every prompt. The
+    // retrieval query is contextualised with recent user turns so anaphoric
+    // follow-ups ("tell me more") still retrieve the right chunks.
     $aichat_trace('DEBUG', 'rag_start', "courseid={$courseid} cmid={$cmid} sectionid={$sectionid}");
+    $retrievalquery = \local_aichat\rag\context_assembler::build_retrieval_query(
+        $thread->id, $usermsg, $usermsgrecord->id
+    );
     $ragcontext = \local_aichat\rag\context_assembler::build_context(
-        $courseid, $usermsg,
+        $courseid, $retrievalquery,
         $cmid > 0 ? $cmid : null,
         $sectionid > 0 ? $sectionid : null
     );
@@ -148,9 +153,11 @@ try {
     );
     $aichat_trace('DEBUG', 'system_prompt_done', 'len=' . strlen($systemprompt));
 
-    // History summarization.
+    // History summarization. The just-stored current message is excluded by
+    // ID — build_messages() appends it itself, so it must not also occupy a
+    // raw-history slot (duplication shrank the effective window).
     $aichat_trace('DEBUG', 'history_start', "threadid={$thread->id}");
-    $historydata = \local_aichat\history_summarizer::get_context_history($thread->id);
+    $historydata = \local_aichat\history_summarizer::get_context_history($thread->id, $usermsgrecord->id);
     $aichat_trace('DEBUG', 'history_done',
         'messages=' . count($historydata['messages'])
         . ' has_summary=' . (!empty($historydata['summary']) ? 'yes' : 'no')

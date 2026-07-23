@@ -24,7 +24,7 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->version   = 2024010118;        // YYYYMMDDXX.
+$plugin->version   = 2024010119;        // YYYYMMDDXX.
 $plugin->requires  = 2022112800;        // Requires Moodle 4.1+ (backported off the core_external namespace).
 $plugin->component = 'local_aichat';
 $plugin->maturity  = MATURITY_ALPHA;

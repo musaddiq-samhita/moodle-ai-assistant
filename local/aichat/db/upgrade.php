@@ -90,5 +90,21 @@ function xmldb_local_aichat_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2024010118, 'local', 'aichat');
     }
 
+    if ($oldversion < 2024010119) {
+        // Add the summary coverage cursor: the highest message id incorporated
+        // into the rolling summary. Existing summaries have unknown coverage,
+        // so clear them — they will regenerate with a correct cursor.
+        $table = new xmldb_table('local_aichat_threads');
+        $field = new xmldb_field('summarylastmessageid', XMLDB_TYPE_INTEGER, '10',
+            null, null, null, null, 'summary');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+        $DB->execute("UPDATE {local_aichat_threads} SET summary = NULL");
+
+        upgrade_plugin_savepoint(true, 2024010119, 'local', 'aichat');
+    }
+
+
     return true;
 }

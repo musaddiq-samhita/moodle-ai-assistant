@@ -17,7 +17,9 @@
 /**
  * AI Chat - History summarizer
  *
- * Compresses older conversation history into a rolling summary.
+ * Compresses older conversation history into a rolling summary with a
+ * persisted coverage cursor (threads.summarylastmessageid) so it is always
+ * known exactly which messages the summary covers.
  *
  * @package   local_aichat
  * @copyright 2026 Moodle AI Chat Contributors
@@ -33,21 +35,38 @@ defined('MOODLE_INTERNAL') || die();
  */
 class history_summarizer {
 
+    /** @var int On summary failure, at most this many uncovered older messages are sent raw as fallback. */
+    const FALLBACK_RAW_MESSAGES = 4;
+
     /**
      * Get the conversation context for an API call: summary of older + recent raw messages.
      *
      * @param int $threadid The thread ID.
+     * @param int $excludemessageid Message ID to exclude (the just-stored current
+     *                              user message, which the caller appends itself).
      * @return array {summary: string|null, messages: \stdClass[]}
      */
-    public static function get_context_history(int $threadid): array {
+    public static function get_context_history(int $threadid, int $excludemessageid = 0): array {
         global $DB;
 
         $window = (int) get_config('local_aichat', 'historywindow') ?: 5;
+        if ($window < 1) {
+            $window = 1;
+        }
 
-        // Load all messages ordered by time.
+        // Load all messages in deterministic chronological order. Timestamps
+        // have one-second resolution, so id is required as a tiebreak.
         $messages = $DB->get_records('local_aichat_messages', ['threadid' => $threadid],
-            'timecreated ASC', 'id, role, message, timecreated');
+            'timecreated ASC, id ASC', 'id, role, message, timecreated');
         $messages = array_values($messages);
+
+        // Exclude the current (just-stored) user message by exact ID so it
+        // neither occupies a raw-window slot nor gets sent twice.
+        if ($excludemessageid > 0) {
+            $messages = array_values(array_filter($messages, function($msg) use ($excludemessageid) {
+                return (int) $msg->id !== $excludemessageid;
+            }));
+        }
 
         $total = count($messages);
         if ($total <= $window) {
@@ -58,22 +77,42 @@ class history_summarizer {
         // Split: older messages for summary, recent messages sent raw.
         $recentmessages = array_slice($messages, -$window);
         $oldermessages = array_slice($messages, 0, $total - $window);
+        $lastolderid = (int) end($oldermessages)->id;
 
-        // Check if we already have a cached summary.
-        $thread = $DB->get_record('local_aichat_threads', ['id' => $threadid], 'id, summary');
-        if (!empty($thread->summary)) {
-            // Check if summary is still current by counting older messages.
-            // We'll update the summary incrementally if new messages rotated out.
-            return ['summary' => $thread->summary, 'messages' => $recentmessages];
+        $thread = $DB->get_record('local_aichat_threads', ['id' => $threadid],
+            'id, summary, summarylastmessageid');
+        $cursor = (int) ($thread->summarylastmessageid ?? 0);
+        $summary = (string) ($thread->summary ?? '');
+
+        if ($summary !== '' && $cursor >= $lastolderid) {
+            // Summary provably covers everything outside the raw window.
+            return ['summary' => $summary, 'messages' => $recentmessages];
         }
 
-        // Generate a fresh summary of the older messages.
-        $summary = self::generate_summary($oldermessages);
-        if (!empty($summary)) {
-            $DB->set_field('local_aichat_threads', 'summary', $summary, ['id' => $threadid]);
+        // Some older messages are not covered by the summary yet.
+        $uncovered = array_values(array_filter($oldermessages, function($msg) use ($cursor) {
+            return (int) $msg->id > $cursor;
+        }));
+
+        if ($summary === '') {
+            $newsummary = self::generate_summary($oldermessages);
+        } else {
+            $newsummary = self::update_summary($summary, $uncovered);
         }
 
-        return ['summary' => $summary, 'messages' => $recentmessages];
+        if ($newsummary !== '') {
+            self::save_summary($threadid, $newsummary, $lastolderid);
+            return ['summary' => $newsummary, 'messages' => $recentmessages];
+        }
+
+        // Summarization failed. Never silently drop context: keep whatever
+        // stale summary exists and prepend a bounded tail of the uncovered
+        // older messages so the model still sees them raw.
+        $fallback = array_slice($uncovered, -self::FALLBACK_RAW_MESSAGES);
+        return [
+            'summary' => $summary !== '' ? $summary : null,
+            'messages' => array_merge($fallback, $recentmessages),
+        ];
     }
 
     /**
@@ -87,34 +126,74 @@ class history_summarizer {
         global $DB;
 
         $window = (int) get_config('local_aichat', 'historywindow') ?: 5;
+        if ($window < 1) {
+            $window = 1;
+        }
 
         $total = $DB->count_records('local_aichat_messages', ['threadid' => $threadid]);
         if ($total <= $window) {
             return; // No summary needed yet.
         }
 
-        // Get the message(s) that just rotated out of the raw window.
+        // Deterministic ordering with id tiebreak.
         $oldercount = $total - $window;
         $oldermessages = $DB->get_records('local_aichat_messages', ['threadid' => $threadid],
-            'timecreated ASC', 'id, role, message, timecreated', 0, $oldercount);
+            'timecreated ASC, id ASC', 'id, role, message, timecreated', 0, $oldercount);
         $oldermessages = array_values($oldermessages);
+        if (empty($oldermessages)) {
+            return;
+        }
+        $lastolderid = (int) end($oldermessages)->id;
 
-        $thread = $DB->get_record('local_aichat_threads', ['id' => $threadid], 'id, summary');
-        $currentsummary = $thread->summary ?? '';
+        $thread = $DB->get_record('local_aichat_threads', ['id' => $threadid],
+            'id, summary, summarylastmessageid');
+        $cursor = (int) ($thread->summarylastmessageid ?? 0);
+        $currentsummary = (string) ($thread->summary ?? '');
 
-        if (empty($currentsummary)) {
-            // Generate first summary.
+        if ($cursor >= $lastolderid && $currentsummary !== '') {
+            return; // Summary already covers all rotated-out messages.
+        }
+
+        // Only summarize messages beyond the persisted cursor so a failed
+        // batch is retried on the next call instead of being skipped.
+        $uncovered = array_values(array_filter($oldermessages, function($msg) use ($cursor) {
+            return (int) $msg->id > $cursor;
+        }));
+        if (empty($uncovered)) {
+            return;
+        }
+
+        if ($currentsummary === '') {
             $summary = self::generate_summary($oldermessages);
         } else {
-            // Incrementally update: send current summary + the newly-rotated message(s).
-            // Only the last 2 messages that rotated are used for incremental update.
-            $newrotated = array_slice($oldermessages, -2);
-            $summary = self::update_summary($currentsummary, $newrotated);
+            $summary = self::update_summary($currentsummary, $uncovered);
         }
 
-        if (!empty($summary)) {
-            $DB->set_field('local_aichat_threads', 'summary', $summary, ['id' => $threadid]);
+        if ($summary !== '') {
+            self::save_summary($threadid, $summary, $lastolderid);
         }
+        // On failure: leave summary and cursor untouched — the uncovered
+        // messages remain > cursor and will be retried next time.
+    }
+
+    /**
+     * Persist summary text and coverage cursor together, guarding against a
+     * concurrent request regressing a newer cursor (poor-man's CAS).
+     *
+     * @param int $threadid The thread ID.
+     * @param string $summary The new summary text.
+     * @param int $coveredupto The highest message ID this summary covers.
+     */
+    private static function save_summary(int $threadid, string $summary, int $coveredupto): void {
+        global $DB;
+
+        $DB->execute(
+            "UPDATE {local_aichat_threads}
+                SET summary = ?, summarylastmessageid = ?
+              WHERE id = ?
+                AND (summarylastmessageid IS NULL OR summarylastmessageid <= ?)",
+            [$summary, $coveredupto, $threadid, $coveredupto]
+        );
     }
 
     /**
@@ -161,9 +240,13 @@ class history_summarizer {
      *
      * @param string $currentsummary The current rolling summary.
      * @param array $newmessages The newly rotated-out messages.
-     * @return string The updated summary.
+     * @return string The updated summary, or '' on failure.
      */
     private static function update_summary(string $currentsummary, array $newmessages): string {
+        if (empty($newmessages)) {
+            return $currentsummary;
+        }
+
         $transcript = '';
         foreach ($newmessages as $msg) {
             $role = ucfirst($msg->role);
@@ -189,7 +272,9 @@ class history_summarizer {
             return $result['response'];
         } catch (\Exception $e) {
             debugging('AI Chat: Summary update failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
-            return $currentsummary; // Keep existing summary on failure.
+            // Return '' (not the stale summary) so callers know coverage did
+            // NOT advance and can retry the same batch later.
+            return '';
         }
     }
 }

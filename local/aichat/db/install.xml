@@ -16,6 +16,8 @@
                COMMENT="Auto-generated from first user message"/>
         <FIELD NAME="summary" TYPE="text" NOTNULL="false" SEQUENCE="false"
                COMMENT="Rolling summary of older conversation history for context compression"/>
+        <FIELD NAME="summarylastmessageid" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false"
+               COMMENT="Coverage cursor: highest message id incorporated into summary"/>
         <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
         <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
       </FIELDS>

@@ -33,6 +33,67 @@ defined('MOODLE_INTERNAL') || die();
  */
 class context_assembler {
 
+    /** @var int Max previous user turns appended to the retrieval query. */
+    const RETRIEVAL_CONTEXT_TURNS = 2;
+
+    /** @var int Max characters taken from each previous user turn. */
+    const RETRIEVAL_TURN_MAX_CHARS = 200;
+
+    /**
+     * Build the embedding/retrieval query for a message.
+     *
+     * Anaphoric follow-ups ("tell me more", "what about the second one?")
+     * embed to noise on their own, so the current message is contextualised
+     * with a bounded tail of the user's previous turns. Only user turns are
+     * used — assistant output could import hallucinated or injected content
+     * into retrieval. The current message always comes first so it dominates
+     * the embedding.
+     *
+     * @param int $threadid The thread ID.
+     * @param string $usermsg The current (sanitized) user message.
+     * @param int $excludemessageid ID of the just-stored current message row.
+     * @return string The retrieval query text.
+     */
+    public static function build_retrieval_query(int $threadid, string $usermsg, int $excludemessageid = 0): string {
+        global $DB;
+
+        if ($threadid <= 0) {
+            return $usermsg;
+        }
+
+        // Latest previous user turns, newest first, deterministic ordering.
+        $select = 'threadid = ? AND role = ?';
+        $params = [$threadid, 'user'];
+        if ($excludemessageid > 0) {
+            $select .= ' AND id <> ?';
+            $params[] = $excludemessageid;
+        }
+        $previous = $DB->get_records_select('local_aichat_messages', $select, $params,
+            'timecreated DESC, id DESC', 'id, message', 0, self::RETRIEVAL_CONTEXT_TURNS);
+
+        if (empty($previous)) {
+            return $usermsg;
+        }
+
+        $turns = [];
+        foreach ($previous as $msg) {
+            $text = trim($msg->message);
+            if ($text === '') {
+                continue;
+            }
+            $turns[] = \core_text::substr($text, 0, self::RETRIEVAL_TURN_MAX_CHARS);
+        }
+        if (empty($turns)) {
+            return $usermsg;
+        }
+
+        // Oldest of the selected turns first for natural reading order.
+        $turns = array_reverse($turns);
+
+        return $usermsg . "\n\nEarlier user questions in this conversation:\n- "
+             . implode("\n- ", $turns);
+    }
+
     /**
      * Build the context string for the AI system prompt.
      *

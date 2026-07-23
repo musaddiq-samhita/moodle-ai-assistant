@@ -118,9 +118,14 @@ class send_message extends external_api {
         $usermsgrecord->id = $DB->insert_record('local_aichat_messages', $usermsgrecord);
 
         // RAG context assembly — pass current cmid and sectionid so the context
-        // assembler can inject the live page content into every prompt.
+        // assembler can inject the live page content into every prompt. The
+        // retrieval query is contextualised with recent user turns so
+        // anaphoric follow-ups still retrieve the right chunks.
+        $retrievalquery = \local_aichat\rag\context_assembler::build_retrieval_query(
+            $thread->id, $usermsg, $usermsgrecord->id
+        );
         $ragcontext = \local_aichat\rag\context_assembler::build_context(
-            $cid, $usermsg,
+            $cid, $retrievalquery,
             $params['cmid'] > 0 ? $params['cmid'] : null,
             $params['sectionid'] > 0 ? $params['sectionid'] : null
         );
@@ -132,8 +137,9 @@ class send_message extends external_api {
             format_string($course->fullname), $lang, $ragcontext
         );
 
-        // History summarization.
-        $historydata = \local_aichat\history_summarizer::get_context_history($thread->id);
+        // History summarization — exclude the just-stored current message by
+        // ID; build_messages() appends it itself.
+        $historydata = \local_aichat\history_summarizer::get_context_history($thread->id, $usermsgrecord->id);
 
         // Build API messages.
         $apimessages = \local_aichat\azure_openai_client::build_messages(
