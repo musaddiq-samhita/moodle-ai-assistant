@@ -89,6 +89,10 @@ $string['scorm_min_prose_chars'] = 'SCORM minimum lesson length';
 $string['scorm_min_prose_chars_desc'] = 'When indexing SCORM packages, a lesson/slide with fewer than this many characters of text is treated as a title/navigation stub and skipped.';
 $string['scorm_merge_target_chars'] = 'SCORM merge target size';
 $string['scorm_merge_target_chars_desc'] = 'When indexing SCORM packages, consecutive short lessons/slides in the same section are merged together up to about this many characters, producing fewer, denser content chunks.';
+$string['enable_transcription'] = 'Enable SCORM video transcription';
+$string['enable_transcription_desc'] = 'Master switch. When enabled, narrated videos inside SCORM packages can be transcribed (via OpenAI Whisper) and their text added to the RAG index — but only for courses that are individually opted in under Course &gt; AI Chat settings. Video audio is sent to OpenAI for transcription. Silent videos are skipped. Off by default.';
+$string['transcriptionmodel'] = 'Transcription model';
+$string['transcriptionmodel_desc'] = 'The speech-to-text model used for SCORM video transcription. For OpenAI this is the model id (default <code>whisper-1</code>).';
 
 // Usage Limits.
 $string['limitsheading'] = 'Usage Limits';
@@ -271,6 +275,8 @@ $string['enableexport'] = 'Enable chat export';
 $string['enableexport_desc'] = 'Allow students to export their chat history.';
 $string['enableupload'] = 'Enable file/image upload';
 $string['enableupload_desc'] = 'Allow students to upload files and images in the chat.';
+$string['enabletranscription_course'] = 'Enable video transcription';
+$string['enabletranscription_course_desc'] = 'Transcribe the audio of narrated videos inside SCORM packages in this course and add it to the AI\'s knowledge. Audio is sent to the AI provider for transcription. Requires the site-wide transcription setting to also be enabled.';
 $string['settingssaved'] = 'Settings saved successfully.';
 
 // Export strings.

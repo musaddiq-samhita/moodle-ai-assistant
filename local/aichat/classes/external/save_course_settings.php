@@ -48,6 +48,8 @@ class save_course_settings extends external_api {
             'courseid'      => new external_value(PARAM_INT, 'Course ID'),
             'enable_export' => new external_value(PARAM_BOOL, 'Enable chat export'),
             'enable_upload' => new external_value(PARAM_BOOL, 'Enable file upload'),
+            'enable_transcription' => new external_value(PARAM_BOOL,
+                'Enable SCORM video transcription', VALUE_DEFAULT, false),
         ]);
     }
 
@@ -57,15 +59,18 @@ class save_course_settings extends external_api {
      * @param int $courseid
      * @param bool $enableExport
      * @param bool $enableUpload
+     * @param bool $enableTranscription
      * @return array
      */
-    public static function execute(int $courseid, bool $enableExport, bool $enableUpload): array {
+    public static function execute(int $courseid, bool $enableExport, bool $enableUpload,
+            bool $enableTranscription = false): array {
         global $DB;
 
         $params = self::validate_parameters(self::execute_parameters(), [
             'courseid'      => $courseid,
             'enable_export' => $enableExport,
             'enable_upload' => $enableUpload,
+            'enable_transcription' => $enableTranscription,
         ]);
 
         $context = \context_course::instance($params['courseid']);
@@ -80,6 +85,7 @@ class save_course_settings extends external_api {
         if ($existing) {
             $existing->enable_export = (int) $params['enable_export'];
             $existing->enable_upload = (int) $params['enable_upload'];
+            $existing->enable_transcription = (int) $params['enable_transcription'];
             $existing->timemodified  = $now;
             $DB->update_record('local_aichat_course_settings', $existing);
         } else {
@@ -87,6 +93,7 @@ class save_course_settings extends external_api {
             $record->courseid      = $params['courseid'];
             $record->enable_export = (int) $params['enable_export'];
             $record->enable_upload = (int) $params['enable_upload'];
+            $record->enable_transcription = (int) $params['enable_transcription'];
             $record->timecreated   = $now;
             $record->timemodified  = $now;
             $DB->insert_record('local_aichat_course_settings', $record);

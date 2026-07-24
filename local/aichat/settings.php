@@ -198,6 +198,24 @@ if ($hassiteconfig) {
         PARAM_INT
     ));
 
+    // Master switch for SCORM video transcription. Off by default; a course must
+    // ALSO be opted in individually (Course > AI Chat settings) before any audio
+    // is sent to the provider. Only narrated videos are transcribed. OpenAI only.
+    $settings->add(new admin_setting_configcheckbox(
+        'local_aichat/enable_transcription',
+        get_string('enable_transcription', 'local_aichat'),
+        get_string('enable_transcription_desc', 'local_aichat'),
+        0
+    ));
+
+    $settings->add(new admin_setting_configtext(
+        'local_aichat/transcriptionmodel',
+        get_string('transcriptionmodel', 'local_aichat'),
+        get_string('transcriptionmodel_desc', 'local_aichat'),
+        'whisper-1',
+        '/^[a-zA-Z0-9._-]+$/'
+    ));
+
     // -------------------------------------------------------------------------
     // Usage Limits.
     // -------------------------------------------------------------------------

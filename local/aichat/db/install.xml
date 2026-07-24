@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<XMLDB PATH="local/aichat/db" VERSION="2024010105" COMMENT="AI Chat plugin tables"
+<XMLDB PATH="local/aichat/db" VERSION="2024010121" COMMENT="AI Chat plugin tables"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:noNamespaceSchemaLocation="../../../lib/xmldb/xmldb.xsd">
   <TABLES>
@@ -87,6 +87,8 @@
                COMMENT="Whether chat export is enabled for this course"/>
         <FIELD NAME="enable_upload" TYPE="int" LENGTH="2" NOTNULL="true" DEFAULT="0" SEQUENCE="false"
                COMMENT="Whether file/image upload is enabled for this course"/>
+        <FIELD NAME="enable_transcription" TYPE="int" LENGTH="2" NOTNULL="true" DEFAULT="0" SEQUENCE="false"
+               COMMENT="Whether SCORM video transcription is enabled for this course (opt-in)"/>
         <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
         <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
       </FIELDS>
@@ -97,6 +99,39 @@
       <INDEXES>
         <INDEX NAME="ix_courseid" UNIQUE="true" FIELDS="courseid"
                COMMENT="One settings row per course"/>
+      </INDEXES>
+    </TABLE>
+
+    <!-- Cache of SCORM video transcriptions, keyed by file contenthash + policy. -->
+    <TABLE NAME="local_aichat_transcriptions" COMMENT="Cached Whisper transcriptions of SCORM videos.">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="contenthash" TYPE="char" LENGTH="40" NOTNULL="true" SEQUENCE="false"
+               COMMENT="Moodle file SHA-1 content hash of the source video"/>
+        <FIELD NAME="policyhash" TYPE="char" LENGTH="40" NOTNULL="true" SEQUENCE="false"
+               COMMENT="sha1(provider|model|recipe) - a change invalidates the cached result"/>
+        <FIELD NAME="status" TYPE="char" LENGTH="20" NOTNULL="true" SEQUENCE="false"
+               COMMENT="success, empty, undecodable, retryable_error, permanent_error"/>
+        <FIELD NAME="transcript" TYPE="text" NOTNULL="false" SEQUENCE="false"
+               COMMENT="Transcribed text (null unless status=success)"/>
+        <FIELD NAME="language" TYPE="char" LENGTH="20" NOTNULL="false" SEQUENCE="false"
+               COMMENT="Detected language code reported by the provider"/>
+        <FIELD NAME="provider" TYPE="char" LENGTH="20" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="model" TYPE="char" LENGTH="255" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="attemptcount" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="retryafter" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false"
+               COMMENT="Unix time before which a retryable_error must not be retried"/>
+        <FIELD NAME="lasterror" TYPE="text" NOTNULL="false" SEQUENCE="false"
+               COMMENT="Sanitized last error (no key, no audio, no full body)"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="ix_content_policy" UNIQUE="true" FIELDS="contenthash, policyhash"
+               COMMENT="One cached outcome per (video contenthash, transcription policy)"/>
       </INDEXES>
     </TABLE>
 

@@ -45,6 +45,7 @@ $formdata->courseid = $courseid;
 if ($existing) {
     $formdata->enable_export = $existing->enable_export;
     $formdata->enable_upload = $existing->enable_upload;
+    $formdata->enable_transcription = $existing->enable_transcription;
 }
 
 $form = new local_aichat_course_settings_form(null, null, 'post', '', ['class' => 'aichat-course-settings']);
@@ -58,6 +59,7 @@ if ($form->is_cancelled()) {
     if ($existing) {
         $existing->enable_export = $data->enable_export;
         $existing->enable_upload = $data->enable_upload;
+        $existing->enable_transcription = $data->enable_transcription;
         $existing->timemodified  = $now;
         $DB->update_record('local_aichat_course_settings', $existing);
     } else {
@@ -65,6 +67,7 @@ if ($form->is_cancelled()) {
         $record->courseid      = $courseid;
         $record->enable_export = $data->enable_export;
         $record->enable_upload = $data->enable_upload;
+        $record->enable_transcription = $data->enable_transcription;
         $record->timecreated   = $now;
         $record->timemodified  = $now;
         $DB->insert_record('local_aichat_course_settings', $record);

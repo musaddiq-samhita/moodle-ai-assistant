@@ -52,6 +52,11 @@ class local_aichat_course_settings_form extends moodleform {
             get_string('enableupload_desc', 'local_aichat'));
         $mform->setDefault('enable_upload', 0);
 
+        $mform->addElement('advcheckbox', 'enable_transcription',
+            get_string('enabletranscription_course', 'local_aichat'),
+            get_string('enabletranscription_course_desc', 'local_aichat'));
+        $mform->setDefault('enable_transcription', 0);
+
         $this->add_action_buttons();
     }
 }

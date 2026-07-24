@@ -146,5 +146,38 @@ Rispondi nella lingua dell\'utente: {lang}.',
         upgrade_plugin_savepoint(true, 2024010120, 'local', 'aichat');
     }
 
+    if ($oldversion < 2024010121) {
+        // SCORM video transcription (Phase 1): add a per-course opt-in toggle and
+        // a transcription cache keyed by (file contenthash, transcription policy).
+        $coursesettings = new xmldb_table('local_aichat_course_settings');
+        $field = new xmldb_field('enable_transcription', XMLDB_TYPE_INTEGER, '2',
+            null, XMLDB_NOTNULL, null, '0', 'enable_upload');
+        if (!$dbman->field_exists($coursesettings, $field)) {
+            $dbman->add_field($coursesettings, $field);
+        }
+
+        $table = new xmldb_table('local_aichat_transcriptions');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('contenthash', XMLDB_TYPE_CHAR, '40', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('policyhash', XMLDB_TYPE_CHAR, '40', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('status', XMLDB_TYPE_CHAR, '20', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('transcript', XMLDB_TYPE_TEXT, null, null, null, null, null);
+            $table->add_field('language', XMLDB_TYPE_CHAR, '20', null, null, null, null);
+            $table->add_field('provider', XMLDB_TYPE_CHAR, '20', null, null, null, null);
+            $table->add_field('model', XMLDB_TYPE_CHAR, '255', null, null, null, null);
+            $table->add_field('attemptcount', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('retryafter', XMLDB_TYPE_INTEGER, '10', null, null, null, null);
+            $table->add_field('lasterror', XMLDB_TYPE_TEXT, null, null, null, null, null);
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('ix_content_policy', XMLDB_INDEX_UNIQUE, ['contenthash', 'policyhash']);
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2024010121, 'local', 'aichat');
+    }
+
     return true;
 }

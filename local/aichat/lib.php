@@ -28,6 +28,28 @@
 defined('MOODLE_INTERNAL') || die();
 
 /**
+ * Canonical reader for per-course AI Chat settings.
+ *
+ * Single source of truth for the per-course toggles, applying defaults when no
+ * row exists. Server-side callers should use this rather than reading the table
+ * directly, so defaults stay consistent.
+ *
+ * @param int $courseid
+ * @return \stdClass {enable_export: bool, enable_upload: bool, enable_transcription: bool}
+ */
+function local_aichat_get_course_settings(int $courseid): \stdClass {
+    global $DB;
+
+    $row = $DB->get_record('local_aichat_course_settings', ['courseid' => $courseid]);
+
+    return (object) [
+        'enable_export'        => $row ? (bool) $row->enable_export : false,
+        'enable_upload'        => $row ? (bool) $row->enable_upload : false,
+        'enable_transcription' => $row ? (bool) $row->enable_transcription : false,
+    ];
+}
+
+/**
  * Inject the floating chatbot widget on course and activity pages.
  *
  * Called automatically by Moodle's plugin hook system just before </body>.
@@ -123,11 +145,13 @@ function local_aichat_before_footer() {
         )->out(false);
     }
 
-    // Load per-course settings (export/upload toggles) from DB.
-    $dbsettings = $DB->get_record('local_aichat_course_settings', ['courseid' => $courseid]);
+    // Load per-course settings via the canonical reader; expose only the
+    // learner-UI-relevant toggles to JavaScript (transcription is a server-side
+    // background-processing switch and is not used by the chatbot UI).
+    $allcoursesettings = local_aichat_get_course_settings($courseid);
     $coursesettings = (object)[
-        'enable_export' => $dbsettings ? (bool) $dbsettings->enable_export : false,
-        'enable_upload' => $dbsettings ? (bool) $dbsettings->enable_upload : false,
+        'enable_export' => $allcoursesettings->enable_export,
+        'enable_upload' => $allcoursesettings->enable_upload,
     ];
 
     // User language.

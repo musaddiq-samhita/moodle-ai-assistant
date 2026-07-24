@@ -85,6 +85,10 @@ $string['ragtopk'] = 'Risultati Top-K';
 $string['ragtopk_desc'] = 'Numero di blocchi rilevanti da recuperare tramite RAG.';
 $string['ragthreshold'] = 'Soglia di Similarità';
 $string['ragthreshold_desc'] = 'Punteggio minimo di similarità coseno (0–1) per includere un blocco. Valori più bassi restituiscono più risultati ma meno rilevanti.';
+$string['enable_transcription'] = 'Abilita trascrizione video SCORM';
+$string['enable_transcription_desc'] = 'Interruttore principale. Se abilitato, i video narrati all\'interno dei pacchetti SCORM possono essere trascritti (tramite OpenAI Whisper) e il loro testo aggiunto all\'indice RAG, ma solo per i corsi abilitati singolarmente in Corso &gt; Impostazioni AI Chat. L\'audio dei video viene inviato a OpenAI per la trascrizione. I video muti vengono ignorati. Disabilitato per impostazione predefinita.';
+$string['transcriptionmodel'] = 'Modello di trascrizione';
+$string['transcriptionmodel_desc'] = 'Il modello speech-to-text usato per la trascrizione dei video SCORM. Per OpenAI è l\'id del modello (predefinito <code>whisper-1</code>).';
 
 // Usage Limits.
 $string['limitsheading'] = 'Limiti di Utilizzo';
@@ -267,6 +271,8 @@ $string['enableexport'] = 'Abilita esportazione chat';
 $string['enableexport_desc'] = 'Consenti agli studenti di esportare la cronologia della chat.';
 $string['enableupload'] = 'Abilita caricamento file/immagini';
 $string['enableupload_desc'] = 'Consenti agli studenti di caricare file e immagini nella chat.';
+$string['enabletranscription_course'] = 'Abilita trascrizione video';
+$string['enabletranscription_course_desc'] = 'Trascrivi l\'audio dei video narrati all\'interno dei pacchetti SCORM di questo corso e aggiungilo alle conoscenze dell\'AI. L\'audio viene inviato al provider AI per la trascrizione. Richiede che sia abilitata anche l\'impostazione di trascrizione a livello di sito.';
 $string['settingssaved'] = 'Impostazioni salvate con successo.';
 
 // Export strings.

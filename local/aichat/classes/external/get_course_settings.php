@@ -56,7 +56,7 @@ class get_course_settings extends external_api {
      * @return array
      */
     public static function execute(int $courseid): array {
-        global $DB;
+        global $CFG;
 
         $params = self::validate_parameters(self::execute_parameters(), [
             'courseid' => $courseid,
@@ -66,20 +66,13 @@ class get_course_settings extends external_api {
         self::validate_context($context);
         require_capability('local/aichat:use', $context);
 
-        $settings = $DB->get_record('local_aichat_course_settings', [
-            'courseid' => $params['courseid'],
-        ]);
-
-        if (!$settings) {
-            return [
-                'enable_export' => false,
-                'enable_upload' => false,
-            ];
-        }
+        require_once($CFG->dirroot . '/local/aichat/lib.php');
+        $settings = \local_aichat_get_course_settings($params['courseid']);
 
         return [
-            'enable_export' => (bool) $settings->enable_export,
-            'enable_upload' => (bool) $settings->enable_upload,
+            'enable_export'        => $settings->enable_export,
+            'enable_upload'        => $settings->enable_upload,
+            'enable_transcription' => $settings->enable_transcription,
         ];
     }
 
@@ -92,6 +85,8 @@ class get_course_settings extends external_api {
         return new external_single_structure([
             'enable_export' => new external_value(PARAM_BOOL, 'Whether chat export is enabled'),
             'enable_upload' => new external_value(PARAM_BOOL, 'Whether file upload is enabled'),
+            'enable_transcription' => new external_value(PARAM_BOOL,
+                'Whether SCORM video transcription is enabled', VALUE_OPTIONAL),
         ]);
     }
 }
