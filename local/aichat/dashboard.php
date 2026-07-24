@@ -37,11 +37,18 @@ $PAGE->set_context($context);
 $PAGE->set_title(get_string('dashboard', 'local_aichat'));
 $PAGE->set_heading(format_string($course->fullname));
 
-// Handle rebuild action before data gathering so stats are up to date.
-$rebuildresult = null;
+// Handle rebuild action. Rebuilding can export course media to the AI provider
+// and incur cost, so it requires the manage capability (not just dashboard view),
+// and runs as a background ad-hoc task rather than blocking this request.
+$rebuildqueued = false;
 if (optional_param('rebuild', 0, PARAM_BOOL) && confirm_sesskey()) {
-    $rebuildresult = \local_aichat\rag\vector_store::index_course($courseid);
+    require_capability('local/aichat:manage', $context);
+    $task = new \local_aichat\task\rebuild_course_index();
+    $task->set_custom_data(['courseid' => $courseid]);
+    \core\task\manager::queue_adhoc_task($task, true);
+    $rebuildqueued = true;
 }
+$canmanage = has_capability('local/aichat:manage', $context);
 
 // Gather analytics data.
 $now   = time();
@@ -198,11 +205,11 @@ echo html_writer::end_div();
 echo html_writer::end_div();
 
 // Show rebuild notification if applicable.
-if ($rebuildresult !== null) {
+if ($rebuildqueued) {
     echo '<div class="aichat-notification aichat-notification--success">' .
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">' .
         '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>' .
-        '<span>' . get_string('indexrebuilt', 'local_aichat', (object) $rebuildresult) . '</span></div>';
+        '<span>' . get_string('indexrebuildqueued', 'local_aichat') . '</span></div>';
 }
 
 // Stats grid.
@@ -313,16 +320,18 @@ if ($ragstats['last_indexed']) {
             '<span class="aichat-rag-metric-value">' . userdate($ragstats['last_indexed']) . '</span>' .
         '</div>';
 }
-echo '</div>' .
-        '<div style="margin-top: 16px;">' .
+echo '</div>';
+if ($canmanage) {
+    echo '<div style="margin-top: 16px;">' .
             '<a href="' . $rebuildurl->out(true) . '" class="aichat-rebuild-btn">' .
                 '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">' .
                 '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>' .
                 '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>' .
                 get_string('rebuildindex', 'local_aichat') .
             '</a>' .
-        '</div>' .
-    '</div>' .
+        '</div>';
+}
+echo '</div>' .
     '</div>';
 
 // Messages per day chart.

@@ -48,6 +48,10 @@ class reindex_courses extends \core\task\scheduled_task {
     public function execute(): void {
         global $DB;
 
+        // Run as a site admin so availability-restricted activities are visible;
+        // otherwise their embeddings would be treated as removed and deleted.
+        \core\session\manager::set_user(get_admin());
+
         $cutoff = time() - DAYSECS;
 
         // Find courses that have embeddings older than 24 hours.
@@ -65,7 +69,9 @@ class reindex_courses extends \core\task\scheduled_task {
         foreach ($courses as $record) {
             try {
                 mtrace("  Re-indexing course {$record->courseid}...");
-                $stats = \local_aichat\rag\vector_store::index_course($record->courseid);
+                // Incremental reindex; transcription is permitted (it only runs for
+                // courses individually opted in, and reuses the transcript cache).
+                $stats = \local_aichat\rag\vector_store::index_course($record->courseid, false, true);
                 mtrace("    Indexed: {$stats['indexed']}, Skipped: {$stats['skipped']}, " .
                        "Deleted: {$stats['deleted']}");
             } catch (\Exception $e) {

@@ -236,6 +236,7 @@ $string['chunkcount'] = '{$a} chunks indexed';
 $string['lastindexed'] = 'Last indexed: {$a}';
 $string['rebuildindex'] = 'Rebuild Index';
 $string['indexrebuilt'] = 'Index rebuilt: {$a->indexed} indexed, {$a->skipped} skipped, {$a->deleted} deleted.';
+$string['indexrebuildqueued'] = 'Index rebuild queued. It will run in the background shortly; the figures below will update once it completes.';
 $string['messagesperday'] = 'Messages per Day';
 $string['topusersbyusage'] = 'Top Users by Usage';
 $string['exportusercsv'] = 'Download User Report (CSV)';

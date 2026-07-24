@@ -66,12 +66,16 @@ class rebuild_index extends external_api {
 
         $cid = $params['courseid'];
 
-        // Manual rebuild forces a full re-parse (bypasses the unchanged-source skip).
-        $stats = \local_aichat\rag\vector_store::index_course($cid, true);
+        // A cold rebuild may transcribe several minute-long videos, so it runs as
+        // a background ad-hoc task (as admin) rather than synchronously in the
+        // request. Duplicate queued rebuilds for the same course are suppressed.
+        $task = new \local_aichat\task\rebuild_course_index();
+        $task->set_custom_data(['courseid' => $cid]);
+        \core\task\manager::queue_adhoc_task($task, true);
 
         return [
-            'success'    => true,
-            'chunkcount' => $stats['indexed'] + $stats['skipped'],
+            'success' => true,
+            'queued'  => true,
         ];
     }
 
@@ -82,8 +86,8 @@ class rebuild_index extends external_api {
      */
     public static function execute_returns(): external_single_structure {
         return new external_single_structure([
-            'success'    => new external_value(PARAM_BOOL, 'Whether the re-indexing succeeded'),
-            'chunkcount' => new external_value(PARAM_INT, 'Number of content chunks indexed'),
+            'success' => new external_value(PARAM_BOOL, 'Whether the rebuild was accepted'),
+            'queued'  => new external_value(PARAM_BOOL, 'Whether a background rebuild task was queued'),
         ]);
     }
 }
