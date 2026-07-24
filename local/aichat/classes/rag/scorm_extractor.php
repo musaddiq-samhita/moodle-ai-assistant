@@ -526,6 +526,228 @@ class scorm_extractor {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Storyline video -> slide mapping (pure helpers; no API calls).
+    // ------------------------------------------------------------------
+
+    /**
+     * Index Storyline video assets from data.js: assetLib[*] where videoType=mp4.
+     *
+     * @param array $data Decoded data.js payload.
+     * @return array int asset id => relative url (e.g. 'story_content/video_x.mp4')
+     */
+    public static function storyline_video_assets(array $data): array {
+        $out = [];
+        foreach (($data['assetLib'] ?? []) as $asset) {
+            if (!is_array($asset)) {
+                continue;
+            }
+            if (($asset['videoType'] ?? '') !== 'mp4') {
+                continue;
+            }
+            if (!isset($asset['id'], $asset['url'])) {
+                continue;
+            }
+            $out[(int) $asset['id']] = (string) $asset['url'];
+        }
+        return $out;
+    }
+
+    /**
+     * Map each slide key to its referenced video asset ids from the top-level
+     * slideMap. The slide key is slideRefs[*].id, e.g. 'sceneId.slideId'.
+     *
+     * @param array $data Decoded data.js payload.
+     * @return array string slide key => int[] asset ids
+     */
+    public static function storyline_slide_video_map(array $data): array {
+        $out = [];
+        foreach (($data['slideMap']['slideRefs'] ?? []) as $ref) {
+            if (!is_array($ref) || !isset($ref['id'])) {
+                continue;
+            }
+            $ids = [];
+            foreach (($ref['assetIds'] ?? []) as $aid) {
+                if (is_int($aid) || (is_string($aid) && ctype_digit($aid))) {
+                    $ids[] = (int) $aid;
+                }
+            }
+            if (!empty($ids)) {
+                $out[(string) $ref['id']] = array_values(array_unique($ids));
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Collect video asset ids from a slide model's data.videodata.assetId nodes.
+     *
+     * A dedicated traversal is required because collect_storyline_text() prunes
+     * the 'assetId' subtree via STORYLINE_SKIP_KEYS.
+     *
+     * @param array $model Decoded slide model.
+     * @return int[] asset ids
+     */
+    public static function storyline_model_video_ids(array $model): array {
+        $ids = [];
+        self::collect_videodata_assetids($model, $ids);
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * Recursively collect data.videodata.assetId values.
+     *
+     * @param mixed $node
+     * @param array $out (by reference)
+     */
+    private static function collect_videodata_assetids($node, array &$out): void {
+        if (!is_array($node)) {
+            return;
+        }
+        if (isset($node['videodata']) && is_array($node['videodata']) && isset($node['videodata']['assetId'])) {
+            $aid = $node['videodata']['assetId'];
+            if (is_int($aid) || (is_string($aid) && ctype_digit($aid))) {
+                $out[] = (int) $aid;
+            }
+        }
+        foreach ($node as $value) {
+            if (is_array($value)) {
+                self::collect_videodata_assetids($value, $out);
+            }
+        }
+    }
+
+    /**
+     * Decide which video asset ids to attach to a slide, given the two
+     * independent mappings (top-level slideMap and the slide model).
+     *
+     * both     - the mappings agree (share ids); attach the intersection.
+     * single   - only one source has ids; accept them (log a warning upstream).
+     * conflict - both have ids but disagree entirely; attach nothing (fallback).
+     * none     - no video on this slide.
+     *
+     * @param int[] $topids Ids from the top-level slideMap.
+     * @param int[] $modelids Ids from the slide model.
+     * @return array {attach: int[], sources: string}
+     */
+    public static function classify_slide_videos(array $topids, array $modelids): array {
+        $top = array_values(array_unique(array_map('intval', $topids)));
+        $model = array_values(array_unique(array_map('intval', $modelids)));
+        sort($top);
+        sort($model);
+
+        if (empty($top) && empty($model)) {
+            return ['attach' => [], 'sources' => 'none'];
+        }
+        if (empty($top) || empty($model)) {
+            return ['attach' => !empty($top) ? $top : $model, 'sources' => 'single'];
+        }
+        $both = array_values(array_intersect($top, $model));
+        if (!empty($both)) {
+            return ['attach' => $both, 'sources' => 'both'];
+        }
+        return ['attach' => [], 'sources' => 'conflict'];
+    }
+
+    /**
+     * Validate and split a Storyline asset URL into a Moodle filearea path.
+     *
+     * Rejects absolute URLs, schemes/hosts, NUL bytes, backslashes, traversal,
+     * anything outside story_content/, and non-mp4 files.
+     *
+     * @param string $url Relative asset url from data.js.
+     * @return array|null {filepath, filename} or null if invalid.
+     */
+    public static function storyline_asset_relpath(string $url) {
+        $url = trim($url);
+        if ($url === '' || strpos($url, '://') !== false || strpos($url, "\0") !== false
+                || strpos($url, '\\') !== false) {
+            return null;
+        }
+        $url = ltrim($url, '/');
+        if (strpos($url, '..') !== false) {
+            return null;
+        }
+        if (stripos($url, 'story_content/') !== 0) {
+            return null;
+        }
+        if (strtolower((string) pathinfo($url, PATHINFO_EXTENSION)) !== 'mp4') {
+            return null;
+        }
+        return [
+            'filepath' => '/' . trim(dirname($url), '/') . '/',
+            'filename' => basename($url),
+        ];
+    }
+
+    /**
+     * Enumerate the eligible video candidates for a SCORM package: every video
+     * that maps (agreement or single-source) to an indexed slide, resolved to a
+     * Moodle file + contenthash. Used for transcript injection and for the
+     * cache-completeness check on the unchanged-package skip.
+     *
+     * @param \context_module $ctx
+     * @return array list of {scenekey, slidetitle, assetid, filepath, filename, contenthash, sources}
+     */
+    protected static function storyline_eligible_videos(\context_module $ctx): array {
+        $data = self::read_gpd($ctx, '/html5/data/js/', 'data.js');
+        if (!is_array($data) || empty($data['scenes'])) {
+            return [];
+        }
+        $assets = self::storyline_video_assets($data);
+        $slidemap = self::storyline_slide_video_map($data);
+        $fs = get_file_storage();
+
+        $out = [];
+        foreach ($data['scenes'] as $scene) {
+            if (!empty($scene['isMessageScene'])) {
+                continue;
+            }
+            foreach (($scene['slides'] ?? []) as $slide) {
+                if (array_key_exists('includeInSlideCounts', $slide) && !$slide['includeInSlideCounts']) {
+                    continue;
+                }
+                $scenekey = (string) ($scene['id'] ?? '') . '.' . (string) ($slide['id'] ?? '');
+                $topids = $slidemap[$scenekey] ?? [];
+                $url = ltrim((string) ($slide['html5url'] ?? ''), '/');
+                $model = $url !== '' ? self::read_gpd($ctx, '/' . trim(dirname($url), '/') . '/', basename($url)) : null;
+                $modelids = is_array($model) ? self::storyline_model_video_ids($model) : [];
+                $plan = self::classify_slide_videos($topids, $modelids);
+                if ($plan['sources'] === 'conflict') {
+                    debugging('local_aichat scorm_extractor: video mapping conflict on slide ' . $scenekey,
+                        DEBUG_DEVELOPER);
+                }
+                foreach ($plan['attach'] as $assetid) {
+                    if (!isset($assets[$assetid])) {
+                        continue;
+                    }
+                    $rel = self::storyline_asset_relpath($assets[$assetid]);
+                    if ($rel === null) {
+                        continue;
+                    }
+                    $file = $fs->get_file($ctx->id, 'mod_scorm', 'content', 0, $rel['filepath'], $rel['filename']);
+                    if (!$file) {
+                        continue;
+                    }
+                    if ($plan['sources'] === 'single') {
+                        debugging('local_aichat scorm_extractor: single-source video mapping on slide '
+                            . $scenekey . ' asset ' . $assetid, DEBUG_DEVELOPER);
+                    }
+                    $out[] = [
+                        'scenekey'    => $scenekey,
+                        'slidetitle'  => trim((string) ($slide['title'] ?? '')),
+                        'assetid'     => $assetid,
+                        'filepath'    => $rel['filepath'],
+                        'filename'    => $rel['filename'],
+                        'contenthash' => $file->get_contenthash(),
+                        'sources'     => $plan['sources'],
+                    ];
+                }
+            }
+        }
+        return $out;
+    }
+
     /**
      * Map slide id -> section title from the Storyline frame nav outline (best effort).
      *
