@@ -1,0 +1,16 @@
+{
+  "_comment": "Conflict case: the top-level slideMap links asset 10 to sceneA.slide1, but the slide model for sceneA.slide1 (below) references asset 11 instead. Mapping must NOT guess; it emits a titled fallback segment and logs. Also includes an unmapped asset (99) present in assetLib but in no slideRef.",
+  "assetLib": [
+    { "kind": "asset", "id": 10, "videoType": "mp4", "url": "story_content/video_a.mp4" },
+    { "kind": "asset", "id": 11, "videoType": "mp4", "url": "story_content/video_b.mp4" },
+    { "kind": "asset", "id": 99, "videoType": "mp4", "url": "story_content/video_unmapped.mp4" }
+  ],
+  "slideMap": {
+    "slideRefs": [
+      { "id": "sceneA.slide1", "assetIds": [10] }
+    ]
+  },
+  "slideModelVideoIds": {
+    "sceneA.slide1": [11]
+  }
+}

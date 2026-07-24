@@ -1,0 +1,17 @@
+{
+  "_comment": "Minimized Articulate Storyline data.js payload (shape confirmed live on cmid 135, Storyline 3.70). Video assets in assetLib are linked to slides via slideMap.slideRefs[*].id (= 'sceneId.slideId') and assetIds. Used by scorm_extractor mapping unit tests.",
+  "assetLib": [
+    { "kind": "asset", "id": 10, "videoType": "mp4", "url": "story_content/video_narrated_1196x670.mp4" },
+    { "kind": "asset", "id": 11, "videoType": "mp4", "url": "story_content/video_silent_866x530.mp4" },
+    { "kind": "asset", "id": 12, "videoType": "mp4", "url": "story_content/video_shared_848x480.mp4" },
+    { "kind": "asset", "id": 99, "videoType": "mp4", "url": "story_content/video_unmapped_640x360.mp4" },
+    { "kind": "asset", "id": 20, "imageType": "png", "url": "story_content/img_decorative.png" }
+  ],
+  "slideMap": {
+    "slideRefs": [
+      { "id": "sceneA.slide1", "assetIds": [10, 12] },
+      { "id": "sceneA.slide2", "assetIds": [11, 12] },
+      { "id": "sceneB.slide1", "assetIds": [] }
+    ]
+  }
+}
