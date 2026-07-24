@@ -47,6 +47,25 @@ class circuit_breaker {
     /** @var string Half-open state — allowing one probe request. */
     private const STATE_HALF_OPEN = 'half_open';
 
+    /** @var string Default operation scope (chat completions). */
+    private const DEFAULT_OPERATION = 'chat';
+
+    /** @var array Allowed operation scopes (bounds the cache key). */
+    private const OPERATIONS = ['chat', 'transcription'];
+
+    /**
+     * Resolve a validated cache key for an operation scope.
+     *
+     * @param string $operation
+     * @return string
+     */
+    private static function state_key(string $operation): string {
+        if (!in_array($operation, self::OPERATIONS, true)) {
+            $operation = self::DEFAULT_OPERATION;
+        }
+        return 'cb_state:' . $operation;
+    }
+
     /**
      * Check whether a request is allowed through the circuit breaker.
      *
@@ -55,15 +74,17 @@ class circuit_breaker {
      * acceptable trade-off for a cache-based circuit breaker; the worst case is
      * two probe requests instead of one.
      *
+     * @param string $operation Operation scope ('chat' or 'transcription'); a failing
+     *                          batch of transcriptions must not open the chat circuit.
      * @throws \moodle_exception If the circuit is open and the cooldown has not elapsed.
      */
-    public static function check(): void {
+    public static function check(string $operation = self::DEFAULT_OPERATION): void {
         // If circuit breaker is disabled in settings, skip entirely.
         if (!get_config('local_aichat', 'cbenabled')) {
             return;
         }
 
-        $state = self::get_state();
+        $state = self::get_state($operation);
 
         if ($state['state'] === self::STATE_OPEN) {
             $cooldown = (int) get_config('local_aichat', 'cbcooldownminutes') ?: 5;
@@ -75,47 +96,74 @@ class circuit_breaker {
             }
 
             // Cooldown elapsed: move to half-open (allow one probe).
-            self::set_state(self::STATE_HALF_OPEN, $state['failure_count'], $state['opened_at']);
+            self::set_state($operation, self::STATE_HALF_OPEN, $state['failure_count'], $state['opened_at']);
         }
         // STATE_CLOSED and STATE_HALF_OPEN allow the request to proceed.
     }
 
     /**
      * Record a successful API call.
+     *
+     * @param string $operation Operation scope.
      */
-    public static function record_success(): void {
-        self::set_state(self::STATE_CLOSED, 0, 0);
+    public static function record_success(string $operation = self::DEFAULT_OPERATION): void {
+        self::set_state($operation, self::STATE_CLOSED, 0, 0);
     }
 
     /**
      * Record a failed API call. Opens the circuit after exceeding the threshold.
+     *
+     * @param string $operation Operation scope.
      */
-    public static function record_failure(): void {
+    public static function record_failure(string $operation = self::DEFAULT_OPERATION): void {
         // If circuit breaker is disabled, do not track failures.
         if (!get_config('local_aichat', 'cbenabled')) {
             return;
         }
 
-        $state = self::get_state();
+        $state = self::get_state($operation);
         $count = $state['failure_count'] + 1;
         $threshold = (int) get_config('local_aichat', 'cbfailurethreshold') ?: 3;
 
         if ($state['state'] === self::STATE_HALF_OPEN || $count >= $threshold) {
             // Open the circuit.
-            self::set_state(self::STATE_OPEN, $count, time());
+            self::set_state($operation, self::STATE_OPEN, $count, time());
         } else {
-            self::set_state(self::STATE_CLOSED, $count, 0);
+            self::set_state($operation, self::STATE_CLOSED, $count, 0);
         }
+    }
+
+    /**
+     * Whether the circuit for an operation is currently open (blocking).
+     *
+     * Unlike check(), this never throws — callers that must degrade (e.g. a
+     * transcription batch) can test the state and stop making provider calls
+     * for the run without aborting the surrounding work.
+     *
+     * @param string $operation Operation scope.
+     * @return bool
+     */
+    public static function is_open(string $operation = self::DEFAULT_OPERATION): bool {
+        if (!get_config('local_aichat', 'cbenabled')) {
+            return false;
+        }
+        $state = self::get_state($operation);
+        if ($state['state'] !== self::STATE_OPEN) {
+            return false;
+        }
+        $cooldown = (int) get_config('local_aichat', 'cbcooldownminutes') ?: 5;
+        return (time() - $state['opened_at']) < $cooldown * 60;
     }
 
     /**
      * Get the current circuit breaker state from cache.
      *
+     * @param string $operation Operation scope.
      * @return array {state: string, failure_count: int, opened_at: int}
      */
-    private static function get_state(): array {
+    private static function get_state(string $operation = self::DEFAULT_OPERATION): array {
         $cache = \cache::make('local_aichat', self::CACHE_AREA);
-        $data = $cache->get('cb_state');
+        $data = $cache->get(self::state_key($operation));
         if ($data === false) {
             return [
                 'state' => self::STATE_CLOSED,
@@ -129,13 +177,14 @@ class circuit_breaker {
     /**
      * Set the circuit breaker state in cache.
      *
+     * @param string $operation Operation scope.
      * @param string $state The new state.
      * @param int $failurecount The current consecutive failure count.
      * @param int $openedat Timestamp when the circuit was opened (0 if closed).
      */
-    private static function set_state(string $state, int $failurecount, int $openedat): void {
+    private static function set_state(string $operation, string $state, int $failurecount, int $openedat): void {
         $cache = \cache::make('local_aichat', self::CACHE_AREA);
-        $cache->set('cb_state', [
+        $cache->set(self::state_key($operation), [
             'state' => $state,
             'failure_count' => $failurecount,
             'opened_at' => $openedat,
