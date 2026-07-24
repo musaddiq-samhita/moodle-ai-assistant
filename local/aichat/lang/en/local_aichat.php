@@ -202,6 +202,8 @@ $string['privacy:metadata:feedback:comment'] = 'An optional comment with the fee
 $string['privacy:metadata:feedback:timecreated'] = 'When the feedback was given.';
 $string['privacy:metadata:aiprovider'] = 'Messages are sent to the configured external AI provider (OpenAI or Microsoft Azure OpenAI) for AI processing.';
 $string['privacy:metadata:aiprovider:message'] = 'The user message sent to the AI provider to generate a response.';
+$string['privacy:metadata:aitranscription'] = 'When an administrator enables video transcription for a course, the audio of narrated videos inside that course\'s SCORM packages is sent to the AI provider to be transcribed into text for the assistant\'s knowledge base.';
+$string['privacy:metadata:aitranscription:audio'] = 'The audio track of a course SCORM video, sent to the AI provider for transcription.';
 
 // Events.
 $string['eventchatmessagesent'] = 'Chat message sent';

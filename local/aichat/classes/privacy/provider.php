@@ -75,6 +75,13 @@ class provider implements
             'message' => 'privacy:metadata:aiprovider:message',
         ], 'privacy:metadata:aiprovider');
 
+        // Course SCORM video audio may be sent to the AI provider for transcription
+        // when an administrator enables it for a course. This is course content, not
+        // personal data, but the external transfer is disclosed here for completeness.
+        $collection->add_external_location_link('ai_provider_transcription', [
+            'audio' => 'privacy:metadata:aitranscription:audio',
+        ], 'privacy:metadata:aitranscription');
+
         return $collection;
     }
 

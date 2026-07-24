@@ -440,11 +440,21 @@ class scorm_extractor {
         // (cache-aware) and group the resulting text by owning slide key.
         $transcriptsbyslide = [];
         if ($allowtranscription) {
+            $discovered = 0;
+            $withtext = 0;
             foreach (self::storyline_eligible_videos($ctx) as $v) {
+                $discovered++;
                 $text = self::transcribe_video($ctx, $v);
                 if ($text !== null && trim($text) !== '') {
+                    $withtext++;
                     $transcriptsbyslide[$v['scenekey']][] = trim($text);
                 }
+            }
+            if ($discovered > 0) {
+                debugging('local_aichat transcription: cmid ' . $ctx->instanceid . ' - '
+                    . $discovered . ' video(s) discovered, ' . $withtext . ' with usable transcript '
+                    . '(remainder silent/undecodable/failed - see local_aichat_transcriptions).',
+                    DEBUG_DEVELOPER);
             }
         }
 
