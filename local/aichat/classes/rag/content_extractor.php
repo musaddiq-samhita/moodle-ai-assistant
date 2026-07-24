@@ -42,7 +42,8 @@ class content_extractor {
      * @param int $courseid The course ID.
      * @return array Array of chunks: ['chunk_type', 'chunk_id', 'chunk_title', 'content_text']
      */
-    public static function extract_course_content(int $courseid, array $existingrows = []): array {
+    public static function extract_course_content(int $courseid, array $existingrows = [],
+            bool $allowtranscription = false, array &$failedsources = []): array {
         $course = get_course($courseid);
         $modinfo = get_fast_modinfo($course);
         $chunks = [];
@@ -65,8 +66,15 @@ class content_extractor {
             // SCORM packages get their own tiered extractor (title/prose from the
             // packaged files), producing pre-formed chunks - not the flat-string path.
             if ($cm->modname === 'scorm') {
-                $scormchunks = scorm_extractor::extract_chunks($cm, $course, $existingrows);
-                $chunks = array_merge($chunks, $scormchunks);
+                // A failed SCORM extraction is contained here (so it does not
+                // abort the course) AND recorded so index_course preserves this
+                // package's existing embeddings instead of deleting them.
+                try {
+                    $scormchunks = scorm_extractor::extract_chunks($cm, $course, $existingrows, $allowtranscription);
+                    $chunks = array_merge($chunks, $scormchunks);
+                } catch (extraction_failed_exception $e) {
+                    $failedsources[] = ['chunk_type' => $e->chunktype, 'chunk_id' => $e->chunkid];
+                }
                 continue;
             }
             $text = self::extract_activity($cm, $course);

@@ -86,9 +86,12 @@ class scorm_extractor {
      *        pre-parse skip in a later slice; unused here).
      * @return array List of chunk dicts.
      */
-    public static function extract_chunks(\cm_info $cm, \stdClass $course, array $existingrows = []): array {
-        // Containment: any failure extracting one SCORM package degrades to a lower
-        // tier (or nothing) - it must never abort indexing of the whole course.
+    public static function extract_chunks(\cm_info $cm, \stdClass $course, array $existingrows = [],
+            bool $allowtranscription = false): array {
+        // Containment: a failure here must not abort indexing of the whole
+        // course, but it also must NOT silently return zero chunks - that would
+        // let index_course delete this package's existing embeddings. Instead we
+        // throw a typed exception so the indexer preserves the prior rows.
         try {
             $fingerprint = self::package_fingerprint($cm);
 
@@ -103,16 +106,43 @@ class scorm_extractor {
                 }
             }
 
-            $chunks = self::build_chunks($cm, $course);
+            $chunks = self::build_chunks($cm, $course, $allowtranscription);
             return self::tag_source_hash($chunks, $fingerprint);
         } catch (\Exception $e) {
             debugging(
-                "local_aichat scorm_extractor: cmid {$cm->id} extraction failed, skipping ("
+                "local_aichat scorm_extractor: cmid {$cm->id} extraction failed, preserving prior index ("
                     . $e->getMessage() . ')',
                 DEBUG_DEVELOPER
             );
-            return [];
+            throw new extraction_failed_exception('scorm', (int) $cm->id, $e->getMessage());
         }
+    }
+
+    /**
+     * Whether SCORM video transcription is permitted for this activity right now.
+     *
+     * Requires ALL of: the plugin enabled, the global transcription switch, the
+     * course opt-in, the caller's background/maintenance flag, and the OpenAI
+     * provider (the only certified transcription provider in Phase 1).
+     *
+     * @param \cm_info $cm
+     * @param bool $allowtranscription The caller's execution flag.
+     * @return bool
+     */
+    protected static function transcription_allowed(\cm_info $cm, bool $allowtranscription): bool {
+        if (!$allowtranscription) {
+            return false;
+        }
+        if (!get_config('local_aichat', 'enabled') || !get_config('local_aichat', 'enable_transcription')) {
+            return false;
+        }
+        if (\local_aichat\azure_openai_client::get_provider() !== 'openai') {
+            return false;
+        }
+        global $CFG;
+        require_once($CFG->dirroot . '/local/aichat/lib.php');
+        $coursesettings = \local_aichat_get_course_settings((int) $cm->course);
+        return !empty($coursesettings->enable_transcription);
     }
 
     /**
@@ -120,14 +150,15 @@ class scorm_extractor {
      *
      * @param \cm_info $cm
      * @param \stdClass $course
+     * @param bool $allowtranscription Whether transcription may run (threaded to the parser).
      * @return array Chunk dicts.
      */
-    private static function build_chunks(\cm_info $cm, \stdClass $course): array {
+    private static function build_chunks(\cm_info $cm, \stdClass $course, bool $allowtranscription = false): array {
         $ctx = \context_module::instance($cm->id);
         $format = self::detect_format($ctx);
 
         // Tier A - full package prose via the per-format parser.
-        $segments = self::parse($format, $ctx);
+        $segments = self::parse($format, $ctx, $allowtranscription);
         if (!empty($segments)) {
             $chunks = self::assemble_chunks($segments, $cm, $course);
             if (!empty($chunks)) {
@@ -274,14 +305,15 @@ class scorm_extractor {
      *
      * @param string $format
      * @param \context_module $ctx
+     * @param bool $allowtranscription Whether transcription may run (Storyline only in Phase 1).
      * @return array Segment list.
      */
-    protected static function parse(string $format, \context_module $ctx): array {
+    protected static function parse(string $format, \context_module $ctx, bool $allowtranscription = false): array {
         switch ($format) {
             case 'rise':
                 return self::parse_rise($ctx);
             case 'storyline':
-                return self::parse_storyline($ctx);
+                return self::parse_storyline($ctx, $allowtranscription);
             case 'generic':
                 return self::parse_generic($ctx);
             case 'cmi5':
@@ -381,9 +413,10 @@ class scorm_extractor {
      * window.globalProvideData('<tag>', '<js-string>'). One segment per slide.
      *
      * @param \context_module $ctx
+     * @param bool $allowtranscription Whether video transcription may run (wired in a later slice).
      * @return array Segment list (empty on failure -> Tier B fallback).
      */
-    protected static function parse_storyline(\context_module $ctx): array {
+    protected static function parse_storyline(\context_module $ctx, bool $allowtranscription = false): array {
         $data = self::read_gpd($ctx, '/html5/data/js/', 'data.js');
         if (!is_array($data) || empty($data['scenes'])) {
             debugging('local_aichat scorm_extractor: Storyline data.js unreadable, falling back to titles',

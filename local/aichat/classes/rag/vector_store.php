@@ -42,7 +42,33 @@ class vector_store {
      *        when the resulting content actually changed.
      * @return array {indexed: int, skipped: int, deleted: int}
      */
-    public static function index_course(int $courseid, bool $force = false): array {
+    public static function index_course(int $courseid, bool $force = false, bool $allowtranscription = false): array {
+        global $DB;
+
+        // Serialize the whole read/extract/embed/write/delete cycle per course so
+        // cron and a manual rebuild cannot race (double-embed or delete on a stale
+        // snapshot). If another indexer holds the lock, skip this run.
+        $lock = index_lock::course($courseid, 0);
+        if (!$lock) {
+            return ['indexed' => 0, 'skipped' => 0, 'deleted' => 0, 'locked' => true];
+        }
+
+        try {
+            return self::index_course_locked($courseid, $force, $allowtranscription);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * The body of index_course(), run while holding the course-index lock.
+     *
+     * @param int $courseid
+     * @param bool $force
+     * @param bool $allowtranscription
+     * @return array {indexed, skipped, deleted}
+     */
+    private static function index_course_locked(int $courseid, bool $force, bool $allowtranscription): array {
         global $DB;
 
         $indexed = 0;
@@ -53,15 +79,27 @@ class vector_store {
         // unchanged sources (e.g. a SCORM package whose fingerprint is unchanged).
         // A forced rebuild passes no rows to the extractor, so it always re-parses.
         $existing = $DB->get_records('local_aichat_embeddings', ['courseid' => $courseid]);
-        $chunks = content_extractor::extract_course_content($courseid, $force ? [] : $existing);
+        $failedsources = [];
+        $chunks = content_extractor::extract_course_content(
+            $courseid, $force ? [] : $existing, $allowtranscription, $failedsources);
+
+        // Sources whose extraction failed this run: their existing rows must be
+        // preserved (never treated as "removed" and deleted).
+        $failedset = [];
+        foreach ($failedsources as $fs) {
+            $failedset[$fs['chunk_type'] . '::' . $fs['chunk_id']] = true;
+        }
+
         $existingmap = [];
         $existingids = [];
+        $existingsource = [];
         foreach ($existing as $record) {
             // Key includes the title so multiple sub-chunks of one activity
             // (e.g. a split lesson: "… (part 1/2)", "… (part 2/2)") are distinct rows.
             $key = self::chunk_key($record->chunk_type, $record->chunk_id, $record->chunk_title);
             $existingmap[$key] = $record;
             $existingids[$record->id] = $key;
+            $existingsource[$record->id] = $record->chunk_type . '::' . $record->chunk_id;
         }
 
         // Track which chunk keys are still active.
@@ -124,9 +162,14 @@ class vector_store {
         }
 
         // Delete orphaned embeddings (activities/sections removed from course).
+        // A source whose extraction FAILED this run is preserved: absence of fresh
+        // chunks there means "could not extract", not "content removed".
         $deleted = 0;
         foreach ($existingids as $id => $key) {
             if (!isset($activekeys[$key])) {
+                if (isset($existingsource[$id]) && isset($failedset[$existingsource[$id]])) {
+                    continue;
+                }
                 $DB->delete_records('local_aichat_embeddings', ['id' => $id]);
                 $deleted++;
             }
