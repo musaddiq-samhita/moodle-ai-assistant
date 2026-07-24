@@ -152,17 +152,45 @@ class azure_openai_client {
     }
 
     /**
-     * Build request headers with provider-specific authentication.
+     * Build the provider-specific authentication header only (no Content-Type).
+     *
+     * Multipart uploads (transcription) must let cURL set the multipart
+     * Content-Type + boundary, so they use this instead of the JSON headers.
+     *
+     * @param string $apikey The API key.
+     * @param string $provider 'openai' or 'azure'.
+     * @return string[]
+     */
+    private static function build_auth_header(string $apikey, string $provider): array {
+        return [$provider === 'openai' ? 'Authorization: Bearer ' . $apikey : 'api-key: ' . $apikey];
+    }
+
+    /**
+     * Build request headers with provider-specific authentication (JSON calls).
      *
      * @param string $apikey The API key.
      * @param string $provider 'openai' or 'azure'.
      * @return string[]
      */
     private static function build_request_headers(string $apikey, string $provider): array {
-        return [
-            'Content-Type: application/json',
-            $provider === 'openai' ? 'Authorization: Bearer ' . $apikey : 'api-key: ' . $apikey,
-        ];
+        return array_merge(['Content-Type: application/json'], self::build_auth_header($apikey, $provider));
+    }
+
+    /**
+     * Build the audio-transcription URL for the provider.
+     *
+     * @param string $endpoint Endpoint base URL.
+     * @param string $model OpenAI model id / Azure whisper deployment name.
+     * @param string $apiversion Azure API version (ignored for OpenAI).
+     * @param string $provider 'openai' or 'azure'.
+     * @return string
+     */
+    private static function build_transcription_url(string $endpoint, string $model, string $apiversion, string $provider): string {
+        if ($provider === 'openai') {
+            return rtrim($endpoint, '/') . '/v1/audio/transcriptions';
+        }
+        return rtrim($endpoint, '/') . '/openai/deployments/' . urlencode($model)
+             . '/audio/transcriptions?api-version=' . urlencode($apiversion);
     }
 
     /**
@@ -348,6 +376,179 @@ class azure_openai_client {
             'total_tokens' => (int) ($usage['total_tokens'] ?? 0),
             'deployment' => $deployment,
         ];
+    }
+
+    /** @var string Transcription produced usable text. */
+    const TRANSCRIBE_SUCCESS = 'success';
+    /** @var string Decodable audio but blank text. */
+    const TRANSCRIBE_EMPTY = 'empty';
+    /** @var string File could not be decoded (e.g. no audio track). */
+    const TRANSCRIBE_UNDECODABLE = 'undecodable';
+    /** @var string Transient failure — retry after backoff. */
+    const TRANSCRIBE_RETRYABLE = 'retryable_error';
+    /** @var string Content-specific hard failure (e.g. oversized). */
+    const TRANSCRIBE_PERMANENT = 'permanent_error';
+    /** @var string Provider/config problem — run-level, do not cache per file. */
+    const TRANSCRIBE_CONFIG_BLOCKED = 'config_blocked';
+
+    /** @var int Whisper hard upload limit (25 MB). */
+    const TRANSCRIBE_MAX_BYTES = 26214400;
+
+    /**
+     * Build a normalized transcription outcome array.
+     *
+     * @param string $status One of the TRANSCRIBE_* constants.
+     * @param array $extra Overrides (transcript, language, provider, model, lasterror, retryafterheader).
+     * @return array
+     */
+    private static function transcription_outcome(string $status, array $extra = []): array {
+        return array_merge([
+            'status'           => $status,
+            'transcript'       => null,
+            'language'         => null,
+            'provider'         => null,
+            'model'            => null,
+            'lasterror'        => null,
+            'retryafterheader' => null,
+        ], $extra);
+    }
+
+    /**
+     * Transcribe an audio/video file via the configured speech-to-text provider.
+     *
+     * Transport only: the caller owns the temp file lifecycle (copy from the
+     * Moodle stored_file, delete in finally). Never throws — returns a
+     * discriminated outcome so the cache/pipeline can decide retry/skip policy.
+     * Phase 1 certifies OpenAI only; a non-OpenAI provider returns config_blocked.
+     *
+     * @param string $tmpfilepath Absolute path to a readable local media file.
+     * @param string $filename Original filename (for the multipart part).
+     * @return array {status, transcript, language, provider, model, lasterror, retryafterheader}
+     */
+    public static function transcribe(string $tmpfilepath, string $filename): array {
+        $provider = self::get_provider();
+
+        // Phase 1: OpenAI is the only certified transcription provider.
+        if ($provider !== 'openai') {
+            return self::transcription_outcome(self::TRANSCRIBE_CONFIG_BLOCKED,
+                ['lasterror' => 'transcription requires the OpenAI provider']);
+        }
+
+        // If the transcription circuit is open, stop the run (do not cache).
+        if (circuit_breaker::is_open('transcription')) {
+            return self::transcription_outcome(self::TRANSCRIBE_CONFIG_BLOCKED,
+                ['lasterror' => 'transcription circuit open']);
+        }
+
+        $endpoint = self::resolve_endpoint($provider);
+        $apikey = get_config('local_aichat', 'apikey');
+        $model = trim((string) get_config('local_aichat', 'transcriptionmodel'));
+        if ($model === '') {
+            $model = 'whisper-1';
+        }
+        $apiversion = get_config('local_aichat', 'apiversion') ?: '2024-08-01-preview';
+
+        if (empty($endpoint) || empty($apikey)) {
+            return self::transcription_outcome(self::TRANSCRIBE_CONFIG_BLOCKED,
+                ['lasterror' => 'provider not configured']);
+        }
+        if (!is_readable($tmpfilepath)) {
+            return self::transcription_outcome(self::TRANSCRIBE_PERMANENT,
+                ['lasterror' => 'local media file unreadable', 'provider' => $provider, 'model' => $model]);
+        }
+        $size = filesize($tmpfilepath);
+        if ($size !== false && $size > self::TRANSCRIBE_MAX_BYTES) {
+            return self::transcription_outcome(self::TRANSCRIBE_PERMANENT,
+                ['lasterror' => 'file exceeds 25MB provider limit', 'provider' => $provider, 'model' => $model]);
+        }
+
+        self::validate_endpoint($endpoint, $provider);
+        $url = self::build_transcription_url($endpoint, $model, $apiversion, $provider);
+
+        // Raw multipart upload (this exact shape is verified against the live
+        // OpenAI endpoint). cURL generates the multipart boundary from the array
+        // + CURLFile; we send only the auth header, never a Content-Type.
+        $retryafterheader = null;
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_HTTPHEADER     => self::build_auth_header($apikey, $provider),
+            CURLOPT_POSTFIELDS     => [
+                'file'            => new \CURLFile($tmpfilepath, 'video/mp4', $filename),
+                'model'           => $model,
+                'response_format' => 'verbose_json',
+            ],
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT        => 300,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HEADERFUNCTION => function ($curlh, $header) use (&$retryafterheader) {
+                if (stripos($header, 'retry-after:') === 0) {
+                    $retryafterheader = (int) trim(substr($header, strlen('retry-after:')));
+                }
+                return strlen($header);
+            },
+        ]);
+
+        $tstart = microtime(true);
+        $response = curl_exec($ch);
+        $elapsed = round((microtime(true) - $tstart) * 1000);
+        $httpcode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $transporterror = curl_error($ch);
+        curl_close($ch);
+
+        self::log('INFO', 'transcribe() response', [
+            'http_code' => $httpcode,
+            'elapsed_ms' => $elapsed,
+            'model' => $model,
+        ]);
+
+        // Transport-level failure (no HTTP response): retryable.
+        if ($httpcode === 0 || $response === false) {
+            circuit_breaker::record_failure('transcription');
+            return self::transcription_outcome(self::TRANSCRIBE_RETRYABLE,
+                ['lasterror' => 'transport error', 'provider' => $provider, 'model' => $model,
+                 'retryafterheader' => $retryafterheader]);
+        }
+
+        if ($httpcode === 200) {
+            circuit_breaker::record_success('transcription');
+            $data = json_decode($response, true);
+            if (!is_array($data) || !isset($data['text'])) {
+                return self::transcription_outcome(self::TRANSCRIBE_RETRYABLE,
+                    ['lasterror' => 'invalid JSON response', 'provider' => $provider, 'model' => $model,
+                     'retryafterheader' => $retryafterheader]);
+            }
+            $text = trim((string) $data['text']);
+            $language = isset($data['language']) ? (string) $data['language'] : null;
+            if ($text === '') {
+                return self::transcription_outcome(self::TRANSCRIBE_EMPTY,
+                    ['provider' => $provider, 'model' => $model, 'language' => $language]);
+            }
+            return self::transcription_outcome(self::TRANSCRIBE_SUCCESS,
+                ['transcript' => $text, 'language' => $language, 'provider' => $provider, 'model' => $model]);
+        }
+
+        // No decodable audio (e.g. silent, video-only MP4). Content-specific;
+        // cached against the policy so a future model/recipe can re-try.
+        if ($httpcode === 400 && stripos((string) $response, 'could not be decoded') !== false) {
+            return self::transcription_outcome(self::TRANSCRIBE_UNDECODABLE,
+                ['lasterror' => 'no decodable audio', 'provider' => $provider, 'model' => $model]);
+        }
+
+        // Auth / configuration problems: run-level, NOT cached per file.
+        if ($httpcode === 401 || $httpcode === 403 || $httpcode === 404) {
+            circuit_breaker::record_failure('transcription');
+            return self::transcription_outcome(self::TRANSCRIBE_CONFIG_BLOCKED,
+                ['lasterror' => 'auth/config error http ' . $httpcode]);
+        }
+
+        // Rate limit / server error / anything else: retryable (never poison the cache).
+        circuit_breaker::record_failure('transcription');
+        return self::transcription_outcome(self::TRANSCRIBE_RETRYABLE,
+            ['lasterror' => 'http ' . $httpcode, 'provider' => $provider, 'model' => $model,
+             'retryafterheader' => $retryafterheader]);
     }
 
     /**
