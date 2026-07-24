@@ -93,20 +93,31 @@ class scorm_extractor {
         // let index_course delete this package's existing embeddings. Instead we
         // throw a typed exception so the indexer preserves the prior rows.
         try {
+            // Resolve the full transcription gate once (plugin+global+course+flag+provider).
+            $transcribe = self::transcription_allowed($cm, $allowtranscription);
+
+            // The change fingerprint folds in the transcription policy when
+            // transcription is on, so toggling it (or changing provider/model)
+            // forces a reparse that adds or removes transcript text.
             $fingerprint = self::package_fingerprint($cm);
+            if ($fingerprint !== '' && $transcribe) {
+                $fingerprint = sha1($fingerprint . '|transcription:v1:on:' . transcription_cache::policy_hash());
+            }
 
             // Pre-parse skip: if the package is unchanged since it was last indexed,
-            // re-emit its stored chunks verbatim - no file parse, and index_course
-            // skips re-embedding on the content-hash match.
+            // re-emit its stored chunks verbatim. When transcription is on, only skip
+            // if every eligible video already has a settled cache entry (else reparse
+            // to fill in / retry the missing transcripts).
             if ($fingerprint !== '') {
                 $stored = self::stored_chunks($cm->id, $fingerprint, $existingrows);
-                if ($stored !== null) {
+                if ($stored !== null
+                        && (!$transcribe || self::videos_cache_complete(\context_module::instance($cm->id)))) {
                     self::log_tier($cm, 'skip', 'unchanged package, ' . count($stored) . ' chunk(s)');
                     return $stored;
                 }
             }
 
-            $chunks = self::build_chunks($cm, $course, $allowtranscription);
+            $chunks = self::build_chunks($cm, $course, $transcribe);
             return self::tag_source_hash($chunks, $fingerprint);
         } catch (\Exception $e) {
             debugging(
@@ -425,6 +436,18 @@ class scorm_extractor {
         }
         $sectionmap = self::storyline_section_map($ctx);
 
+        // When transcription is permitted, transcribe each eligible video once
+        // (cache-aware) and group the resulting text by owning slide key.
+        $transcriptsbyslide = [];
+        if ($allowtranscription) {
+            foreach (self::storyline_eligible_videos($ctx) as $v) {
+                $text = self::transcribe_video($ctx, $v);
+                if ($text !== null && trim($text) !== '') {
+                    $transcriptsbyslide[$v['scenekey']][] = trim($text);
+                }
+            }
+        }
+
         // Content scenes in presentation order (skip player message scenes).
         $scenes = [];
         foreach ($data['scenes'] as $scene) {
@@ -453,6 +476,19 @@ class scorm_extractor {
                 $slideid = pathinfo($url, PATHINFO_FILENAME);
                 $model = self::read_gpd($ctx, '/' . trim(dirname($url), '/') . '/', basename($url));
                 $prose = is_array($model) ? self::slide_prose($model) : '';
+
+                // Append any video transcript(s) for this slide.
+                $scenekey = (string) ($scene['id'] ?? '') . '.' . (string) ($slide['id'] ?? '');
+                if (!empty($transcriptsbyslide[$scenekey])) {
+                    $labelled = [];
+                    $multi = count($transcriptsbyslide[$scenekey]) > 1;
+                    foreach ($transcriptsbyslide[$scenekey] as $i => $text) {
+                        $label = $multi ? ('Video transcript ' . ($i + 1) . ':') : 'Video transcript:';
+                        $labelled[] = $label . "\n" . $text;
+                    }
+                    $prose = trim($prose . "\n\n" . implode("\n\n", $labelled));
+                }
+
                 $segments[] = [
                     'lesson_title'  => trim((string) ($slide['title'] ?? '')),
                     'prose'         => $prose,
@@ -779,6 +815,91 @@ class scorm_extractor {
             }
         }
         return $out;
+    }
+
+    /**
+     * Transcribe one eligible video (cache-aware). Returns the transcript text on
+     * success, or null (skip) for silent/undecodable/empty/failed/blocked videos.
+     *
+     * @param \context_module $ctx
+     * @param array $v One entry from storyline_eligible_videos().
+     * @return string|null
+     */
+    protected static function transcribe_video(\context_module $ctx, array $v) {
+        global $CFG;
+        $hash = $v['contenthash'];
+
+        $cached = transcription_cache::lookup($hash);
+        if (!transcription_cache::should_attempt($cached)) {
+            return transcription_cache::usable_transcript($cached);
+        }
+
+        // Serialize per unique video so cron + a manual rebuild cannot upload the
+        // same file twice; re-check the cache inside the lock.
+        $lock = index_lock::transcription($hash, 30);
+        if (!$lock) {
+            return transcription_cache::usable_transcript(transcription_cache::lookup($hash));
+        }
+
+        try {
+            $cached = transcription_cache::lookup($hash);
+            if (!transcription_cache::should_attempt($cached)) {
+                return transcription_cache::usable_transcript($cached);
+            }
+
+            $file = get_file_storage()->get_file($ctx->id, 'mod_scorm', 'content', 0, $v['filepath'], $v['filename']);
+            if (!$file) {
+                return null;
+            }
+            $tmp = $CFG->tempdir . '/aichat_tx_' . uniqid('', true) . '.mp4';
+            $file->copy_content_to($tmp);
+            try {
+                $outcome = \local_aichat\azure_openai_client::transcribe($tmp, $v['filename']);
+            } finally {
+                @unlink($tmp);
+            }
+
+            $status = $outcome['status'];
+            // Provider/config problems are run-level: do NOT cache per file.
+            if ($status === \local_aichat\azure_openai_client::TRANSCRIBE_CONFIG_BLOCKED) {
+                return null;
+            }
+
+            $data = [
+                'transcript' => $outcome['transcript'],
+                'language'   => $outcome['language'],
+                'provider'   => $outcome['provider'],
+                'model'      => $outcome['model'],
+                'lasterror'  => $outcome['lasterror'],
+            ];
+            if ($status === transcription_cache::STATUS_RETRYABLE) {
+                $attempt = ($cached ? (int) $cached->attemptcount : 0) + 1;
+                $data['retryafter'] = transcription_cache::next_retry_after($attempt, $outcome['retryafterheader']);
+            }
+            transcription_cache::store($hash, $status, $data);
+
+            return $status === transcription_cache::STATUS_SUCCESS ? $outcome['transcript'] : null;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Whether every eligible video for a package already has an actionable-free
+     * cache entry (success/empty/undecodable/permanent, or a retryable not yet
+     * due). Used to decide if the unchanged-package skip is safe when
+     * transcription is enabled.
+     *
+     * @param \context_module $ctx
+     * @return bool
+     */
+    protected static function videos_cache_complete(\context_module $ctx): bool {
+        foreach (self::storyline_eligible_videos($ctx) as $v) {
+            if (transcription_cache::should_attempt(transcription_cache::lookup($v['contenthash']))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
