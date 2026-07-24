@@ -445,6 +445,11 @@ class scorm_extractor {
             foreach (self::storyline_eligible_videos($ctx) as $v) {
                 $discovered++;
                 $text = self::transcribe_video($ctx, $v);
+                if ($text === false) {
+                    // Run-level config block (e.g. auth failure / open circuit):
+                    // stop calling the provider; index the slide text we have.
+                    break;
+                }
                 if ($text !== null && trim($text) !== '') {
                     $withtext++;
                     $transcriptsbyslide[$v['scenekey']][] = trim($text);
@@ -833,7 +838,8 @@ class scorm_extractor {
      *
      * @param \context_module $ctx
      * @param array $v One entry from storyline_eligible_videos().
-     * @return string|null
+     * @return string|false|null Transcript text on success; null to skip this
+     *         video; false to signal a run-level config block (stop the batch).
      */
     protected static function transcribe_video(\context_module $ctx, array $v) {
         global $CFG;
@@ -861,18 +867,28 @@ class scorm_extractor {
             if (!$file) {
                 return null;
             }
+            // Copy + transport share one try/finally so a partial temp file from a
+            // failed copy is always removed. transcribe() never throws; a copy
+            // failure is contained here and skips just this video.
             $tmp = $CFG->tempdir . '/aichat_tx_' . uniqid('', true) . '.mp4';
-            $file->copy_content_to($tmp);
+            $outcome = null;
             try {
+                $file->copy_content_to($tmp);
                 $outcome = \local_aichat\azure_openai_client::transcribe($tmp, $v['filename']);
+            } catch (\Throwable $e) {
+                $outcome = null;
             } finally {
                 @unlink($tmp);
             }
+            if ($outcome === null) {
+                return null;
+            }
 
             $status = $outcome['status'];
-            // Provider/config problems are run-level: do NOT cache per file.
+            // Provider/config problems are run-level: do NOT cache per file, and
+            // signal the caller to stop attempting the rest of the batch.
             if ($status === \local_aichat\azure_openai_client::TRANSCRIBE_CONFIG_BLOCKED) {
-                return null;
+                return false;
             }
 
             $data = [

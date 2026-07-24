@@ -62,6 +62,26 @@ silent/undecodable videos are billed $0. A typical course is a few minutes of au
   automatic cleanup in Phase 1; a future task may delete rows whose content hash is
   no longer referenced by any `mod_scorm/content` file.
 
+## Known limitations (Phase 1)
+
+- **Mapping fallback:** if an unknown Storyline variant produces a video whose
+  top-level and slide-model mappings *conflict* (disagree entirely), that video is
+  skipped rather than attached to a guessed slide. There is no "unmapped video
+  transcript" fallback segment yet, so review a newly enabled course's results
+  (the pilot requires zero conflicts). The certified courses map cleanly (all
+  agree).
+- **Concurrency edges:** two courses that share the exact same video file and are
+  rebuilt at the same moment could, in a narrow window, race on the per-video lock
+  (30s wait vs. a longer provider call). Because rebuilds run as ad-hoc tasks that
+  retry, and re-runs fill any missing transcript from cache, this self-corrects on
+  the next run; it is not a data-loss path.
+- **Circuit recovery:** after the transcription circuit's cooldown, workers resume
+  without a single-probe half-open step.
+- **Tests:** only the mapping helpers have unit tests in-tree; the cache / gate /
+  fingerprint / concurrency / client suites are specified in `tests/README.md` but
+  await a PHPUnit test environment. Verification to date is target-runtime lint +
+  the live course-6 pilot.
+
 ## Data / privacy
 
 Enabling transcription for a course sends that course's SCORM video **audio** to the

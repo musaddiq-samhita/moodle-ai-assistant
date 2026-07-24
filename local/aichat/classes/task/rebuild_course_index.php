@@ -49,12 +49,16 @@ class rebuild_course_index extends \core\task\adhoc_task {
         // and their embeddings are not orphan-deleted.
         \core\session\manager::set_user(get_admin());
 
-        try {
-            $stats = \local_aichat\rag\vector_store::index_course($courseid, true, true);
-            mtrace("local_aichat: rebuilt course {$courseid} index - "
-                . "indexed {$stats['indexed']}, skipped {$stats['skipped']}, deleted {$stats['deleted']}");
-        } catch (\Exception $e) {
-            mtrace("local_aichat: rebuild of course {$courseid} failed: " . $e->getMessage());
+        // Do NOT swallow exceptions or a locked result: Moodle's ad-hoc runner
+        // records a thrown task as failed and retries it with a growing fail
+        // delay, which is exactly what a contended lock or a transient indexing
+        // error needs. Swallowing here would drop an accepted rebuild silently.
+        $stats = \local_aichat\rag\vector_store::index_course($courseid, true, true);
+        if (!empty($stats['locked'])) {
+            throw new \moodle_exception('error', 'local_aichat', '', null,
+                "course {$courseid} index is locked by another run; deferring rebuild for retry");
         }
+        mtrace("local_aichat: rebuilt course {$courseid} index - "
+            . "indexed {$stats['indexed']}, skipped {$stats['skipped']}, deleted {$stats['deleted']}");
     }
 }

@@ -414,6 +414,29 @@ class azure_openai_client {
     }
 
     /**
+     * Parse a Retry-After header value (delta-seconds or an HTTP date) into a
+     * positive delay in seconds, or null if it cannot be interpreted.
+     *
+     * @param string $value
+     * @return int|null
+     */
+    private static function parse_retry_after(string $value) {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        if (ctype_digit($value)) {
+            return (int) $value;
+        }
+        $ts = strtotime($value);
+        if ($ts === false) {
+            return null;
+        }
+        $delta = $ts - time();
+        return $delta > 0 ? $delta : null;
+    }
+
+    /**
      * Transcribe an audio/video file via the configured speech-to-text provider.
      *
      * Transport only: the caller owns the temp file lifecycle (copy from the
@@ -462,41 +485,64 @@ class azure_openai_client {
                 ['lasterror' => 'file exceeds 25MB provider limit', 'provider' => $provider, 'model' => $model]);
         }
 
-        self::validate_endpoint($endpoint, $provider);
+        // Endpoint validation can throw (e.g. an invalid stored endpoint after a
+        // provider switch). Contain it so this method upholds its never-throw
+        // contract: a bad configuration degrades to config_blocked, not an
+        // exception that would fail the whole SCORM source.
+        try {
+            self::validate_endpoint($endpoint, $provider);
+        } catch (\Throwable $e) {
+            return self::transcription_outcome(self::TRANSCRIBE_CONFIG_BLOCKED,
+                ['lasterror' => 'invalid endpoint configuration']);
+        }
         $url = self::build_transcription_url($endpoint, $model, $apiversion, $provider);
 
         // Raw multipart upload (this exact shape is verified against the live
         // OpenAI endpoint). cURL generates the multipart boundary from the array
-        // + CURLFile; we send only the auth header, never a Content-Type.
+        // + CURLFile; we send only the auth header, never a Content-Type. The
+        // whole cURL lifecycle is wrapped so a setup fault degrades to retryable
+        // and the handle is always closed.
         $retryafterheader = null;
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
-            CURLOPT_HTTPHEADER     => self::build_auth_header($apikey, $provider),
-            CURLOPT_POSTFIELDS     => [
-                'file'            => new \CURLFile($tmpfilepath, 'video/mp4', $filename),
-                'model'           => $model,
-                'response_format' => 'verbose_json',
-            ],
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT        => 300,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_HEADERFUNCTION => function ($curlh, $header) use (&$retryafterheader) {
-                if (stripos($header, 'retry-after:') === 0) {
-                    $retryafterheader = (int) trim(substr($header, strlen('retry-after:')));
-                }
-                return strlen($header);
-            },
-        ]);
+        $ch = null;
+        $response = false;
+        $httpcode = 0;
+        $elapsed = 0;
+        try {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_HTTPHEADER     => self::build_auth_header($apikey, $provider),
+                CURLOPT_POSTFIELDS     => [
+                    'file'            => new \CURLFile($tmpfilepath, 'video/mp4', $filename),
+                    'model'           => $model,
+                    'response_format' => 'verbose_json',
+                ],
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_TIMEOUT        => 300,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_HEADERFUNCTION => function ($curlh, $header) use (&$retryafterheader) {
+                    if (stripos($header, 'retry-after:') === 0) {
+                        $retryafterheader = self::parse_retry_after(trim(substr($header, strlen('retry-after:'))));
+                    }
+                    return strlen($header);
+                },
+            ]);
 
-        $tstart = microtime(true);
-        $response = curl_exec($ch);
-        $elapsed = round((microtime(true) - $tstart) * 1000);
-        $httpcode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $transporterror = curl_error($ch);
-        curl_close($ch);
+            $tstart = microtime(true);
+            $response = curl_exec($ch);
+            $elapsed = round((microtime(true) - $tstart) * 1000);
+            $httpcode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        } catch (\Throwable $e) {
+            circuit_breaker::record_failure('transcription');
+            return self::transcription_outcome(self::TRANSCRIBE_RETRYABLE,
+                ['lasterror' => 'transport setup error', 'provider' => $provider, 'model' => $model]);
+        } finally {
+            if ($ch) {
+                curl_close($ch);
+            }
+        }
 
         self::log('INFO', 'transcribe() response', [
             'http_code' => $httpcode,
@@ -513,13 +559,15 @@ class azure_openai_client {
         }
 
         if ($httpcode === 200) {
-            circuit_breaker::record_success('transcription');
             $data = json_decode($response, true);
             if (!is_array($data) || !isset($data['text'])) {
+                // Malformed success response: a real failure, not healthy.
+                circuit_breaker::record_failure('transcription');
                 return self::transcription_outcome(self::TRANSCRIBE_RETRYABLE,
                     ['lasterror' => 'invalid JSON response', 'provider' => $provider, 'model' => $model,
                      'retryafterheader' => $retryafterheader]);
             }
+            circuit_breaker::record_success('transcription');
             $text = trim((string) $data['text']);
             $language = isset($data['language']) ? (string) $data['language'] : null;
             if ($text === '') {

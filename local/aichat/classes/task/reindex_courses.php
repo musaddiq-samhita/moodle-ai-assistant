@@ -72,6 +72,10 @@ class reindex_courses extends \core\task\scheduled_task {
                 // Incremental reindex; transcription is permitted (it only runs for
                 // courses individually opted in, and reuses the transcript cache).
                 $stats = \local_aichat\rag\vector_store::index_course($record->courseid, false, true);
+                if (!empty($stats['locked'])) {
+                    mtrace("    Skipped (locked by another run); will retry next scheduled run.");
+                    continue;
+                }
                 mtrace("    Indexed: {$stats['indexed']}, Skipped: {$stats['skipped']}, " .
                        "Deleted: {$stats['deleted']}");
             } catch (\Exception $e) {
